@@ -1,0 +1,143 @@
+name: release
+
+# ONE-TIME registry setup before the FIRST real publish:
+#
+#   1. Bootstrap (token): crates.io has no "pending publisher" concept and
+#      trusted publishing can only be attached to a crate that ALREADY exists, so
+#      the very first publish of `cardanowall-cli` must use a token. Set the
+#      CARGO_REGISTRY_TOKEN repository secret to a crates.io API token with
+#      publish-new + publish-update scopes; the publish step prefers it when set.
+#
+#   2. Trusted Publisher (OIDC): once the crate exists, add a Trusted Publisher on
+#      the `cardanowall-cli` crate (crates.io → crate → Settings → Trusted
+#      Publishing) with these EXACT fields:
+#         Owner             : cardanowall
+#         Repository        : cip309-cli
+#         Workflow filename : release.yml
+#      crates.io has NO organizations — ownership is per-crate. Then clear the
+#      CARGO_REGISTRY_TOKEN secret; the crates-io-auth-action step below mints a
+#      short-lived token from this job's OIDC identity instead.
+#
+# This crate depends on the `cardanowall` SDK crate (cip309-rs). Publish the SDK to
+# crates.io BEFORE tagging a CLI release, or the publish step will fail because the
+# SDK dependency cannot resolve from the registry.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry-run (cargo publish --dry-run --allow-dirty; keep the path-dep, skip the real publish + Release)'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  # id-token is required for crates.io Trusted-Publisher OIDC.
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # The `secrets` context cannot be referenced from an `if:` condition, so the
+  # optional bootstrap token is surfaced as env (empty unless the secret is set).
+  BOOTSTRAP_CARGO_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install stable toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+
+      # ---- Gates: the standalone CI suite, re-run as release-blockers ----------
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy (warnings as errors)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test (full suite)
+        run: cargo test --all-features
+
+      # ---- Rewrite the SDK dependency to a crates.io version (real publish only)
+      # The committed Cargo.toml carries a local path-dep on the `cardanowall` SDK
+      # crate so the repo builds + tests on its own. crates.io requires a registry
+      # version dep instead, so on a real tag publish we strip the `path = "..."`
+      # key, leaving the `version` requirement cargo already records alongside it.
+      # On a dry-run we leave the path-dep in place and pass --allow-dirty.
+      - name: Rewrite SDK dep to a crates.io version (skip on dry-run)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true') }}
+        run: |
+          set -euo pipefail
+          # Drop a `path = "..."` (and any `, path = "..."`) from the cardanowall
+          # dependency line so only the registry `version` requirement remains.
+          python3 - <<'PY'
+          import re, pathlib
+          p = pathlib.Path("Cargo.toml")
+          t = p.read_text()
+          # Remove path = "..." within the cardanowall dependency table entry.
+          t2 = re.sub(r'(cardanowall\s*=\s*\{[^}]*?),?\s*path\s*=\s*"[^"]*"', r'\1', t)
+          if 'version' not in t2.split('cardanowall =', 1)[1].split('}', 1)[0]:
+              raise SystemExit("cardanowall dependency has no version requirement; cannot publish to crates.io")
+          p.write_text(t2)
+          print("Rewrote cardanowall dependency to a crates.io version dep:")
+          print([l for l in t2.splitlines() if l.strip().startswith("cardanowall")])
+          PY
+
+      # ---- Publish to crates.io (OIDC trusted-publishing; token bootstrap) ------
+      # Mint a short-lived (30-minute) registry token from this job's OIDC
+      # identity via the official action. Skipped (a) during the bootstrap phase
+      # when a CARGO_REGISTRY_TOKEN secret is set (the crate must exist before a
+      # Trusted Publisher can be configured), and (b) on a dry-run, since
+      # `cargo publish --dry-run` uploads nothing and needs no token — so a
+      # dry-run works before any crates.io Trusted Publisher exists.
+      - name: Exchange OIDC for a crates.io token
+        id: auth
+        if: ${{ env.BOOTSTRAP_CARGO_TOKEN == '' && !(github.event_name == 'workflow_dispatch' && inputs.dry_run == 'true') }}
+        uses: rust-lang/crates-io-auth-action@v1.0.4
+
+      - name: Publish `cardanowall-cli` to crates.io (dry-run on workflow_dispatch)
+        env:
+          # Prefer the bootstrap secret when present; otherwise use the OIDC token
+          # minted above. Exactly one is non-empty.
+          CARGO_REGISTRY_TOKEN: ${{ env.BOOTSTRAP_CARGO_TOKEN || steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            # Path-dep to the (possibly unpublished) SDK is kept; --allow-dirty lets
+            # cargo package the working tree without a clean-VCS requirement.
+            echo "Dry-run: cargo publish --dry-run --allow-dirty"
+            cargo publish --dry-run --allow-dirty
+          else
+            cargo publish
+          fi
+
+      # ---- GitHub Release ------------------------------------------------------
+      - name: Detect pre-release tag
+        id: prerelease
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          if [[ "${{ github.ref_name }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-.+$ ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'CIP-309 CLI ${{ github.ref_name }}'
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
