@@ -118,7 +118,11 @@ jobs:
             echo "Dry-run: cargo publish --dry-run --allow-dirty"
             cargo publish --dry-run --allow-dirty
           else
-            cargo publish
+            # The exported Cargo.lock pins `cardanowall` from the monorepo path
+            # dep; publishing re-resolves it to the crates.io entry, rewriting the
+            # lock and dirtying the tree. --allow-dirty permits that expected
+            # lockfile update — cargo still runs the full verify build.
+            cargo publish --allow-dirty
           fi
 
       # ---- GitHub Release ------------------------------------------------------
