@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use crate::config::read_config_file::{config_path, parse_config_str, ConfigEnv, SystemConfigEnv};
-use crate::config::CardanowallConfig;
+use crate::config::CardanoWallConfig;
 use crate::util::CliError;
 
 /// Load the full config for editing — an absent file (even when
@@ -21,12 +21,12 @@ use crate::util::CliError;
 ///
 /// Returns [`CliError`] (exit `4`) when the file exists but cannot be read or
 /// fails to parse, or no config path can be resolved.
-pub fn load_config_for_edit(env: &dyn ConfigEnv) -> Result<CardanowallConfig, CliError> {
+pub fn load_config_for_edit(env: &dyn ConfigEnv) -> Result<CardanoWallConfig, CliError> {
     let path = config_path(env)?;
     match env.read_to_string(&path) {
         Ok(raw) => parse_config_str(&raw, &path, env),
         // A missing file is fine here — we are about to create it.
-        Err(None) => Ok(CardanowallConfig::default()),
+        Err(None) => Ok(CardanoWallConfig::default()),
         Err(Some(e)) => Err(CliError::input(format!(
             "config: cannot read {}: {e}",
             path.display()
@@ -40,7 +40,7 @@ pub fn load_config_for_edit(env: &dyn ConfigEnv) -> Result<CardanowallConfig, Cl
 ///
 /// Returns [`CliError`] (exit `4`) on a serialise, directory-create, or write
 /// failure.
-pub fn write_config(env: &dyn ConfigEnv, config: &CardanowallConfig) -> Result<(), CliError> {
+pub fn write_config(env: &dyn ConfigEnv, config: &CardanoWallConfig) -> Result<(), CliError> {
     let path = config_path(env)?;
     let serialised = toml::to_string_pretty(config)
         .map_err(|e| CliError::input(format!("config: cannot serialise config.toml: {e}")))?;

@@ -68,6 +68,7 @@ cardanowall submit --file ./contract.pdf --seed-stdin <<<"$SEED_HEX"
 Run `cardanowall <command> --help` for the full, authoritative flag list.
 
 ### `verify <tx-hash>`
+
 Standalone verification of the CIP-309 record at a Cardano transaction. Fetches
 the metadata from a public explorer, runs structural validation, checks record
 signatures, and (with a recipient key) decrypts and re-hashes a sealed payload.
@@ -79,11 +80,13 @@ cardanowall verify <tx-hash> \
   --profile signed \                                   # core | signed | sealed | recipient-sealed
   --json --pretty
 ```
+
 Sealed proofs: pass `--secret-key <hex>` (or `--secret-key-file` / `--secret-key-stdin`,
 repeatable, `itemIndex:hex` or `hex`) to decrypt and recompute plaintext hashes.
 `--no-fetch` skips all URI/leaves fetches (fully offline structural+signature check).
 
 ### `submit`
+
 Anchor a new PoE through a gateway. Mutually exclusive modes:
 
 ```bash
@@ -91,11 +94,13 @@ cardanowall submit --hash <64-hex-digest>          # anchor a precomputed sha2-2
 cardanowall submit --file ./doc.pdf                # hash the file, then anchor
 cardanowall submit --merkle ./leaves.txt           # build a Merkle tree, anchor root + leaves
 ```
+
 Add `--seed` (or the safe variants below) to attach an Ed25519 record signature;
 omit it to publish unsigned. Requires a gateway (`--base-url` + `--api-key`, env,
 or a saved profile). `--alg blake2b-256` switches the content hash.
 
 ### `sign record | prepare | assemble`
+
 Off-host PATH-1 (identity Ed25519) COSE signing — for air-gapped signing where the
 keys never touch the gateway.
 
@@ -106,17 +111,20 @@ cardanowall sign assemble --signer-pubkey <hex> --signature <hex> --in record.cb
 ```
 
 ### `identity --seed`
+
 Derive and print the public identity from a 32-byte master seed: Ed25519/X25519/
 X-Wing public keys, both age recipient strings, and a short display fingerprint.
 Fully offline; no network, no API key. `--json` emits the full X-Wing key.
 
 ### `merkle build | verify`
+
 ```bash
 cardanowall merkle build  --in leaves.txt --json            # root + canonical leaves-list
 cardanowall merkle verify --root <hex32> --leaf <hex32> --proof proof.json
 ```
 
 ### `inbox sync | list | decrypt`
+
 Discover, list, and decrypt sealed PoE addressed to your identity. Raw-seed-first:
 identify with `--seed <hex>` or a raw `--secret-key <hex>` (plus the `-file`/`-stdin`
 variants) — never an account envelope.
@@ -126,9 +134,11 @@ cardanowall inbox sync   --seed-stdin
 cardanowall inbox list   --seed-stdin --json
 cardanowall inbox decrypt <tx-hash> --secret-key-stdin
 ```
+
 `sync` persists a per-identity cursor under `~/.cardanowall/<id>/inbox.json`.
 
 ### `gateway add | use | list | show | remove`
+
 Named gateway profiles (an endpoint + its API key). This is configuration, not a
 login — the gateway API is key-based.
 
@@ -141,6 +151,7 @@ cardanowall gateway show prod --reveal   # print the key
 ```
 
 ### `completion <bash|zsh|fish|powershell>`
+
 Print a shell completion script to stdout.
 
 ```bash
@@ -199,19 +210,19 @@ public data gateways only; a service `--base-url`/`--api-key` has no default).
 
 Consistent across every command:
 
-| Variable | Flag | Meaning |
-|---|---|---|
-| `CARDANOWALL_BASE_URL` | `--base-url` | service gateway base URL |
-| `CARDANOWALL_API_KEY` | `--api-key` | opaque bearer API key |
-| `CARDANOWALL_SEED` | `--seed` | 32-byte identity seed (hex) |
-| `CARDANOWALL_RECIPIENT_KEY` | `--secret-key` | X25519 recipient key(s) |
-| `CARDANOWALL_CARDANO_GATEWAY` | `--cardano-gateway` | Koios-compatible explorer URL(s) |
-| `CARDANOWALL_ARWEAVE_GATEWAY` | `--arweave-gateway` | Arweave gateway URL(s) |
-| `CARDANOWALL_IPFS_GATEWAY` | `--ipfs-gateway` | IPFS gateway URL(s) |
-| `CARDANOWALL_BLOCKFROST_PROJECT_ID` | `--blockfrost` | Blockfrost fallback |
-| `CARDANOWALL_CONFIRMATION_DEPTH_THRESHOLD` | `--threshold` | confirmation depth |
-| `CARDANOWALL_DENY_HOST` | `--deny-host` | extra egress deny-list entries |
-| `CARDANOWALL_CONFIG_PATH` | — | override the config file path |
+| Variable                                   | Flag                | Meaning                          |
+| ------------------------------------------ | ------------------- | -------------------------------- |
+| `CARDANOWALL_BASE_URL`                     | `--base-url`        | service gateway base URL         |
+| `CARDANOWALL_API_KEY`                      | `--api-key`         | opaque bearer API key            |
+| `CARDANOWALL_SEED`                         | `--seed`            | 32-byte identity seed (hex)      |
+| `CARDANOWALL_RECIPIENT_KEY`                | `--secret-key`      | X25519 recipient key(s)          |
+| `CARDANOWALL_CARDANO_GATEWAY`              | `--cardano-gateway` | Koios-compatible explorer URL(s) |
+| `CARDANOWALL_ARWEAVE_GATEWAY`              | `--arweave-gateway` | Arweave gateway URL(s)           |
+| `CARDANOWALL_IPFS_GATEWAY`                 | `--ipfs-gateway`    | IPFS gateway URL(s)              |
+| `CARDANOWALL_BLOCKFROST_PROJECT_ID`        | `--blockfrost`      | Blockfrost fallback              |
+| `CARDANOWALL_CONFIRMATION_DEPTH_THRESHOLD` | `--threshold`       | confirmation depth               |
+| `CARDANOWALL_DENY_HOST`                    | `--deny-host`       | extra egress deny-list entries   |
+| `CARDANOWALL_CONFIG_PATH`                  | —                   | override the config file path    |
 
 ---
 
@@ -228,13 +239,13 @@ Consistent across every command:
 
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| `0` | valid / success |
-| `1` | integrity-class failure (a cryptographic/structural check failed) |
-| `2` | network-class failure (a fetch/transport error) |
-| `3` | pending (insufficient confirmations) |
-| `4` | CLI input error (bad arguments, missing required input) |
+| Code | Meaning                                                           |
+| ---- | ----------------------------------------------------------------- |
+| `0`  | valid / success                                                   |
+| `1`  | integrity-class failure (a cryptographic/structural check failed) |
+| `2`  | network-class failure (a fetch/transport error)                   |
+| `3`  | pending (insufficient confirmations)                              |
+| `4`  | CLI input error (bad arguments, missing required input)           |
 
 `verify` maps the verifier's verdict straight through to `0/1/2/3`.
 

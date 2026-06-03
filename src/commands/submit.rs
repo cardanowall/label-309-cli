@@ -143,7 +143,7 @@ fn resolve_gateway(args: &SubmitArgs, env: &dyn SecretEnv) -> Result<ServiceGate
 /// The config-injected core of [`resolve_gateway`], so tests need no on-disk file.
 fn resolve_gateway_with(
     args: &SubmitArgs,
-    config: &crate::config::CardanowallConfig,
+    config: &crate::config::CardanoWallConfig,
     env: &dyn SecretEnv,
 ) -> Result<ServiceGateway, CliError> {
     let profile = config.select_gateway(args.gateway_profile.as_deref(), "submit")?;
@@ -541,7 +541,7 @@ mod tests {
         // No base URL from any source → input error before any network call.
         let args = base_args();
         let env = FakeSecretEnv::default();
-        let config = crate::config::CardanowallConfig::default();
+        let config = crate::config::CardanoWallConfig::default();
         let profile = config.select_gateway(None, "submit").unwrap();
         let err = resolve_service_gateway(
             args.base_url.as_deref(),
@@ -560,7 +560,7 @@ mod tests {
         let mut args = base_args();
         args.base_url = Some("https://gw.example".to_string());
         let env = FakeSecretEnv::default();
-        let config = crate::config::CardanowallConfig::default();
+        let config = crate::config::CardanoWallConfig::default();
         assert_eq!(
             resolve_gateway_with(&args, &config, &env).unwrap_err().code,
             4
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn gateway_profile_supplies_base_url_and_key() {
         // With no flags/env, the active profile fills both slots.
-        let mut config = crate::config::CardanowallConfig::default();
+        let mut config = crate::config::CardanoWallConfig::default();
         config.gateways.insert(
             "prod".to_string(),
             crate::config::GatewayProfile {

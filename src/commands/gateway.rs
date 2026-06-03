@@ -396,7 +396,7 @@ fn validate_name(name: &str) -> Result<(), CliError> {
     Ok(())
 }
 
-fn unknown_profile(name: &str, config: &crate::config::CardanowallConfig) -> CliError {
+fn unknown_profile(name: &str, config: &crate::config::CardanoWallConfig) -> CliError {
     let known: Vec<&str> = config.gateways.keys().map(String::as_str).collect();
     let hint = if known.is_empty() {
         "no gateway profiles are defined".to_string()

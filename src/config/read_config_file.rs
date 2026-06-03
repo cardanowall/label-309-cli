@@ -58,7 +58,7 @@ pub struct GatewayProfile {
 /// applies precedence and defaults.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct CardanowallConfig {
+pub struct CardanoWallConfig {
     /// Cardano gateway URL(s) (Koios-compatible).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cardano_gateway: Option<StringOrList>,
@@ -86,7 +86,7 @@ pub struct CardanowallConfig {
     pub gateways: BTreeMap<String, GatewayProfile>,
 }
 
-impl CardanowallConfig {
+impl CardanoWallConfig {
     /// The active gateway profile: the one named by `default_gateway`, if it
     /// resolves to a defined profile.
     #[must_use]
@@ -168,7 +168,7 @@ impl ConfigEnv for SystemConfigEnv {
 /// Returns [`CliError`] (exit `4`) when an explicit config path is set but
 /// missing, when the file cannot be read for another reason, or when the TOML
 /// fails to parse / carries a malformed value.
-pub fn read_config_file(env: &dyn ConfigEnv) -> Result<Option<CardanowallConfig>, CliError> {
+pub fn read_config_file(env: &dyn ConfigEnv) -> Result<Option<CardanoWallConfig>, CliError> {
     let explicit = env.var("CARDANOWALL_CONFIG_PATH").filter(|p| !p.is_empty());
     let path = match &explicit {
         Some(p) => PathBuf::from(p),
@@ -212,7 +212,7 @@ pub fn parse_config_str(
     raw: &str,
     path: &std::path::Path,
     env: &dyn ConfigEnv,
-) -> Result<CardanowallConfig, CliError> {
+) -> Result<CardanoWallConfig, CliError> {
     // First parse permissively to surface unknown keys as warnings, then parse
     // strictly to enforce field types. `toml::Value` never rejects unknown keys.
     if let Ok(toml::Value::Table(table)) = raw.parse::<toml::Value>() {

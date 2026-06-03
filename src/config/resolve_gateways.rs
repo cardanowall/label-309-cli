@@ -13,7 +13,7 @@
 
 use cardanowall::verifier::KOIOS_MAINNET_URL;
 
-use crate::config::read_config_file::CardanowallConfig;
+use crate::config::read_config_file::CardanoWallConfig;
 use crate::util::CliError;
 
 /// The resolved gateway chains and scalars the verifier / inbox paths consume.
@@ -255,7 +255,7 @@ fn validate_chain(chain: &[String], slot: &str) -> Result<(), CliError> {
 pub fn resolve_gateways(
     flags: &GatewayFlags,
     env: &dyn GatewayEnv,
-    config: Option<&CardanowallConfig>,
+    config: Option<&CardanoWallConfig>,
 ) -> Result<ResolvedGateways, CliError> {
     let cardano_gateway_chain = pick_chain(
         &flags.gateway,
@@ -352,9 +352,9 @@ mod tests {
             gateway: vec!["https://flag-1.example".to_string()],
             ..GatewayFlags::default()
         };
-        let cfg = CardanowallConfig {
+        let cfg = CardanoWallConfig {
             cardano_gateway: Some(StringOrList::One("https://config.example".to_string())),
-            ..CardanowallConfig::default()
+            ..CardanoWallConfig::default()
         };
         let out = resolve_gateways(
             &flags,
