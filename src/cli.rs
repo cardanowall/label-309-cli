@@ -36,13 +36,13 @@ use crate::commands;
 use crate::util::color::ColorChoice;
 use crate::util::version::version_string;
 
-/// The `cardanowall` CLI: a standalone CIP-309 Proof-of-Existence toolkit.
+/// The `cardanowall` CLI: a standalone Label 309 Proof-of-Existence toolkit.
 #[derive(Debug, Parser)]
 #[command(
     name = "cardanowall",
     bin_name = "cardanowall",
-    about = "CIP-309 standalone verifier and Proof-of-Existence toolkit",
-    long_about = "CIP-309 standalone verifier and Proof-of-Existence toolkit.\n\n\
+    about = "Label 309 standalone verifier and Proof-of-Existence toolkit",
+    long_about = "Label 309 standalone verifier and Proof-of-Existence toolkit.\n\n\
         ENVIRONMENT (consistent across every command):\n  \
         CARDANOWALL_BASE_URL       gateway base URL        (--base-url)\n  \
         CARDANOWALL_API_KEY        opaque bearer API key   (--api-key)\n  \
@@ -121,9 +121,9 @@ impl GlobalArgs {
 /// The top-level subcommand set.
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Verify a CIP-309 PoE record at a Cardano transaction hash.
+    /// Verify a Label 309 PoE record at a Cardano transaction hash.
     Verify(commands::verify::VerifyArgs),
-    /// Anchor a CIP-309 PoE on Cardano (hash / file / Merkle).
+    /// Anchor a Label 309 PoE on Cardano (hash / file / Merkle).
     Submit(commands::submit::SubmitArgs),
     /// Offline PATH-1 (identity Ed25519) record signing.
     Sign(commands::sign::SignArgs),

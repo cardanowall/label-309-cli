@@ -1,11 +1,11 @@
-# Contributing to the CIP-309 CLI
+# Contributing to the Label 309 CLI
 
 Thank you for your interest in improving `cardanowall`, the command-line tool for
-**CIP-309** — an open standard for **Proof of Existence (PoE)** anchored on the
+**Label 309** — an open standard for **Proof of Existence (PoE)** anchored on the
 Cardano blockchain.
 
 This tool is **pre-1.0**. It is a thin argument-parsing and output shell over the
-Rust CIP-309 SDK (the `cardanowall` crate, from the `cip309-rs` repository): the
+Rust Label 309 SDK (the `cardanowall` crate, from the `label-309-rs` repository): the
 verifier, the cryptographic primitives, sealed-PoE, Merkle proofs, and the
 gateway-agnostic HTTP client all live there. Bug fixes and features that concern
 verification or cryptography belong in the SDK; this repository owns the CLI
@@ -18,22 +18,22 @@ All contributions are made under the terms in [Licensing](#licensing) and the
 
 ## What belongs in this repository
 
-This repository is the **CLI** for CIP-309. The command surface, argument
+This repository is the **CLI** for Label 309. The command surface, argument
 parsing, secret-input hygiene, output rendering, configuration, and the
 exit-code contract belong here.
 
 What does **not** belong here:
 
 - **Verification or cryptographic logic**, the wire-format types, sealed-PoE, or
-  Merkle code belong in the Rust SDK (`cip309-rs`). A divergence between the CLI's
+  Merkle code belong in the Rust SDK (`label-309-rs`). A divergence between the CLI's
   behaviour and the SDK is fixed by aligning the CLI to the SDK, not by
   re-implementing logic here.
 - **Changes to the wire format, grammar, schemas, registries, or the conformance
-  vectors** belong in the `cip309` standard repository. The vectors are
+  vectors** belong in the `label-309` standard repository. The vectors are
   authoritative; the goldens vendored under `tests/fixtures/` are byte-identical
   copies and must not be edited to make a test pass.
-- **Issues in another implementation** belong in its repository — `cip309-ts`
-  (npm) or `cip309-py` (PyPI).
+- **Issues in another implementation** belong in its repository — `label-309-ts`
+  (npm) or `label-309-py` (PyPI).
 
 If you are unsure, open an issue here and ask.
 
@@ -60,7 +60,7 @@ The exit-code contract (`0` valid / `1` integrity / `2` network / `3` pending /
 golden verify-reports vendored under `tests/fixtures/sdk-ts/verify-reports`,
 which are byte-identical to the vectors the TypeScript and Python SDKs load. Do
 not edit a golden to make a test pass: a mismatch means the CLI diverged. If you
-believe a vector itself is wrong, raise it in the `cip309` standard repository.
+believe a vector itself is wrong, raise it in the `label-309` standard repository.
 
 ---
 

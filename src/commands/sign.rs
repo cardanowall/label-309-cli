@@ -237,7 +237,7 @@ fn is_all_hex(s: &str) -> bool {
         && clean.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Decode bytes as a CIP-309 record. An all-hex string is hex-decoded first;
+/// Decode bytes as a Label 309 record. An all-hex string is hex-decoded first;
 /// otherwise the raw bytes are treated as CBOR. The structural validator both
 /// verifies the wire shape AND returns the decoded record.
 fn record_from_cbor_bytes(raw: &[u8], label: &str) -> Result<PoeRecord, CliError> {
@@ -253,7 +253,7 @@ fn record_from_cbor_bytes(raw: &[u8], label: &str) -> Result<PoeRecord, CliError
         ValidateResult::Fail { issues } => {
             let code = issues.first().map_or("UNKNOWN", |i| i.code.code());
             Err(CliError::input(format!(
-                "sign: {label} is not a valid CIP-309 record: {code}"
+                "sign: {label} is not a valid Label 309 record: {code}"
             )))
         }
     }

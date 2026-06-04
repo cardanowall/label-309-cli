@@ -1,6 +1,6 @@
 //! The `cardanowall` CLI library crate.
 //!
-//! A standalone CIP-309 Proof-of-Existence toolkit built on the `cardanowall`
+//! A standalone Label 309 Proof-of-Existence toolkit built on the `cardanowall`
 //! SDK. The binary (`main.rs`) is a thin shell; the command tree, argument
 //! parsing, gateway resolution, and output formatting live here so integration
 //! tests can drive [`run`] directly and assert on the resulting exit code.

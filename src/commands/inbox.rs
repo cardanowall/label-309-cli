@@ -3,7 +3,7 @@
 //!
 //! Three verbs:
 //!
-//! - `sync`    — page sealed records from a CIP-309 gateway
+//! - `sync`    — page sealed records from a Label 309 gateway
 //!   (`/api/v1/records?sealed=true`), trial-decrypt each item with the recipient
 //!   key bundle, and persist confirmed matches to the local bookmark. Records
 //!   below the confirmation-depth threshold are reported as pending and
@@ -23,7 +23,7 @@
 
 use std::collections::HashMap;
 
-use cardanowall::client::{Cip309Client, Cip309ClientConfig, ClientError, RecordsListInput};
+use cardanowall::client::{ClientError, Label309Client, Label309ClientConfig, RecordsListInput};
 use cardanowall::poe_standard::{validate_poe_record, ValidateResult};
 use cardanowall::sealed_poe::{
     ecies_sealed_poe_trial_decrypt, ecies_sealed_poe_unwrap, TrialDecryptKeys, TrialDecryptResult,
@@ -148,7 +148,7 @@ fn relabel(err: CliError, cmd: &str) -> CliError {
 /// Arguments for `cardanowall inbox sync`.
 #[derive(Debug, Args)]
 pub struct InboxSyncArgs {
-    /// target CIP-309 gateway base URL (or env CARDANOWALL_BASE_URL, or a profile).
+    /// target Label 309 gateway base URL (or env CARDANOWALL_BASE_URL, or a profile).
     #[arg(long = "base-url")]
     pub base_url: Option<String>,
     /// opaque bearer API key (or env CARDANOWALL_API_KEY, or a profile).
@@ -188,8 +188,8 @@ fn build_client(
     base_url: String,
     api_key: Option<&str>,
     cmd: &str,
-) -> Result<Cip309Client, CliError> {
-    Cip309Client::new(Cip309ClientConfig {
+) -> Result<Label309Client, CliError> {
+    Label309Client::new(Label309ClientConfig {
         api_key: api_key.map(str::to_string).filter(|s| !s.is_empty()),
         base_url: Some(base_url),
     })
@@ -513,7 +513,7 @@ pub struct InboxDecryptArgs {
     /// write plaintext to this path (or prefix for multi-item).
     #[arg(long)]
     pub out: Option<String>,
-    /// target CIP-309 gateway base URL (or env CARDANOWALL_BASE_URL, or a profile).
+    /// target Label 309 gateway base URL (or env CARDANOWALL_BASE_URL, or a profile).
     #[arg(long = "base-url")]
     pub base_url: Option<String>,
     /// opaque bearer API key (or env CARDANOWALL_API_KEY, or a profile).

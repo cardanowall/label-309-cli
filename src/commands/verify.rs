@@ -1,4 +1,4 @@
-//! `cardanowall verify <tx-hash>` — the standalone CIP-309 verifier.
+//! `cardanowall verify <tx-hash>` — the standalone Label 309 verifier.
 //!
 //! A thin shell over the SDK's `verify_tx`: it owns option parsing, gateway
 //! resolution, output formatting, and the verdict → exit-code mapping. The

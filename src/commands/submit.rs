@@ -1,4 +1,4 @@
-//! `cardanowall submit` — anchor a CIP-309 PoE from the command line.
+//! `cardanowall submit` — anchor a Label 309 PoE from the command line.
 //!
 //! Wraps the high-level publish helpers (`publish_content` / `publish_prehashed`
 //! / `publish_merkle`) and surfaces them as one subcommand with three mutually
@@ -26,8 +26,8 @@
 
 use cardanowall::client::types::{PublishContentInput, SupportedHashAlg};
 use cardanowall::client::{
-    Cip309Client, Cip309ClientConfig, ClientError, MerkleLeaf, PublishError, PublishHelperError,
-    PublishMerkleInput, PublishPrehashedInput, QuoteInput,
+    ClientError, Label309Client, Label309ClientConfig, MerkleLeaf, PublishError,
+    PublishHelperError, PublishMerkleInput, PublishPrehashedInput, QuoteInput,
 };
 use cardanowall::seed_derive::{signer_from_seed, SeedSigner};
 use clap::Args;
@@ -77,7 +77,7 @@ pub struct SubmitArgs {
     /// read the seed from stdin (also `--seed -`).
     #[arg(long = "seed-stdin")]
     pub seed_stdin: bool,
-    /// target CIP-309 gateway base URL (or env CARDANOWALL_BASE_URL, or the active
+    /// target Label 309 gateway base URL (or env CARDANOWALL_BASE_URL, or the active
     /// gateway profile). Required.
     #[arg(long = "base-url")]
     pub base_url: Option<String>,
@@ -346,7 +346,7 @@ pub fn run(args: SubmitArgs) -> Result<(), CliError> {
         .as_ref()
         .map(|s| s as &dyn cardanowall::client::Signer);
 
-    let client = Cip309Client::new(Cip309ClientConfig {
+    let client = Label309Client::new(Label309ClientConfig {
         api_key: gateway.api_key,
         base_url: Some(gateway.base_url),
     })

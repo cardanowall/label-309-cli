@@ -1,6 +1,6 @@
 # Security Policy
 
-`cardanowall` (the CLI) is a command-line tool for CIP-309, a standard for
+`cardanowall` (the CLI) is a command-line tool for Label 309, a standard for
 cryptographic Proof of Existence. People rely on its `verify` verdict to decide
 whether a proof is trustworthy, so we take reports seriously and ask that they be
 handled responsibly.
@@ -10,7 +10,7 @@ handled responsibly.
 This repository holds the **command-line tool** (crate `cardanowall-cli`, binary
 `cardanowall`): argument parsing, secret-input hygiene, output rendering, and the
 exit-code contract. The cryptographic and verification logic lives in the Rust
-SDK crate `cardanowall` (the `cip309-rs` repository), which this CLI is built on.
+SDK crate `cardanowall` (the `label-309-rs` repository), which this CLI is built on.
 
 In scope for a report here:
 
@@ -24,11 +24,11 @@ In scope for a report here:
 
 Out of scope here (report it in the relevant repository instead):
 
-- A flaw or ambiguity in the **standard** itself — report it in the `cip309`
+- A flaw or ambiguity in the **standard** itself — report it in the `label-309`
   standard repository.
 - A bug in the verification or cryptographic logic — that lives in the Rust SDK;
-  report it in the `cip309-rs` repository. The TypeScript and Python SDKs live in
-  `cip309-ts` and `cip309-py`.
+  report it in the `label-309-rs` repository. The TypeScript and Python SDKs live in
+  `label-309-ts` and `label-309-py`.
 
 ## Core security goals
 
@@ -67,4 +67,4 @@ Please include, as far as you can:
 - Because this tool is **pre-1.0**, there are no long-term-supported released
   versions yet; fixes land on the current line.
 
-Thank you for helping keep CIP-309 trustworthy.
+Thank you for helping keep Label 309 trustworthy.

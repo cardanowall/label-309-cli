@@ -1,6 +1,6 @@
-# `cardanowall` — CIP-309 standalone verifier & Proof-of-Existence CLI
+# `cardanowall` — Label 309 standalone verifier & Proof-of-Existence CLI
 
-A single, fast, dependency-free native binary for working with **CIP-309 Proof
+A single, fast, dependency-free native binary for working with **Label 309 Proof
 of Existence** on Cardano: verify a record, anchor a new one, sign off-host,
 derive an identity from a seed, build/verify Merkle proofs, and read a sealed
 inbox.
@@ -8,12 +8,12 @@ inbox.
 It is **gateway-agnostic**. Every networked command takes an explicit gateway
 base URL and an opaque API key — the CLI is bound to no particular operator. The
 hosted `cardanowall.com` service is one such gateway; any server that implements
-the CIP-309 gateway API works the same way. **`verify` needs no gateway operator
+the Label 309 gateway API works the same way. **`verify` needs no gateway operator
 at all** — it talks only to public Cardano explorers (Koios/Blockfrost) and
 public Arweave/IPFS gateways, so a proof can be checked with zero trust in the
 issuer, their domain, or their server.
 
-Built on the Rust CIP-309 SDK (the `cardanowall` crate); a byte-parity twin of
+Built on the Rust Label 309 SDK (the `cardanowall` crate); a byte-parity twin of
 the TypeScript and Python SDKs.
 
 ---
@@ -69,7 +69,7 @@ Run `cardanowall <command> --help` for the full, authoritative flag list.
 
 ### `verify <tx-hash>`
 
-Standalone verification of the CIP-309 record at a Cardano transaction. Fetches
+Standalone verification of the Label 309 record at a Cardano transaction. Fetches
 the metadata from a public explorer, runs structural validation, checks record
 signatures, and (with a recipient key) decrypts and re-hashes a sealed payload.
 
@@ -256,18 +256,18 @@ Consistent across every command:
 `verify` proves a record using only the transaction metadata, the (optional)
 content bytes, and a public blockchain explorer. It contacts no issuer server and
 honors a deny-list so it cannot be steered back to a single operator. A proof you
-verified once stays verifiable by anyone, forever, with any CIP-309 tooling.
+verified once stays verifiable by anyone, forever, with any Label 309 tooling.
 
 ## Related repositories
 
-This CLI is one of the CIP-309 reference projects:
+This CLI is one of the Label 309 reference projects:
 
-- [`cip309`](https://github.com/cardanowall/cip309) — the CIP-309 standard:
+- [`label-309`](https://github.com/cardanowall/label-309) — the Label 309 standard:
   prose spec, CDDL, JSON schemas, registries, and the conformance vectors.
-- [`cip309-rs`](https://github.com/cardanowall/cip309-rs) — the Rust SDK crate
+- [`label-309-rs`](https://github.com/cardanowall/label-309-rs) — the Rust SDK crate
   `cardanowall` this CLI is built on.
-- [`cip309-ts`](https://github.com/cardanowall/cip309-ts) — the TypeScript SDKs.
-- [`cip309-py`](https://github.com/cardanowall/cip309-py) — the Python SDK.
+- [`label-309-ts`](https://github.com/cardanowall/label-309-ts) — the TypeScript SDKs.
+- [`label-309-py`](https://github.com/cardanowall/label-309-py) — the Python SDK.
 
 ## License
 
