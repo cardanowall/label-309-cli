@@ -9,6 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > Pre-1.0 versions do not carry the stability guarantees of
 > [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-06-06
+
+### Changed
+
+- Track the `cardanowall` SDK 0.3.0, which implements the finalized sealed-PoE scheme-1 construction (a breaking wire-format change for sealed envelopes) and hardened recipient decryption. The command surface and flags are unchanged.
+
 ## [0.2.0] - 2026-06-04
 
 ### Changed
