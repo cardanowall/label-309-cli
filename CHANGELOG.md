@@ -9,6 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > Pre-1.0 versions do not carry the stability guarantees of
 > [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-06-12
+
+### Changed
+
+- Version alignment with the coordinated 0.5.0 release; no functional changes.
+
 ## [0.4.0] - 2026-06-11
 
 ### Changed
