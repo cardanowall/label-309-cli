@@ -9,16 +9,20 @@
 //! 1. `--<name>-file <path>`  — read the file, trim trailing whitespace.
 //! 2. `--<name>-stdin` (or the literal value `-`) — read all of stdin, trim the
 //!    trailing newline. Only one stdin reader may run per process.
-//! 3. the raw `--<name> <hex>` argv flag — explicit, so it wins over env, but it
-//!    is the documented-INSECURE path (shell history / `ps` / CI logs).
+//! 3. the raw `--<name> <value>` argv flag — explicit, so it wins over env, but
+//!    it is the documented-INSECURE path (shell history / `ps` / CI logs).
 //! 4. the env var (`CARDANOWALL_SEED` / `CARDANOWALL_RECIPIENT_KEY`).
 //! 5. an interactive hidden prompt — ONLY when the secret is required AND stdin
 //!    is a TTY. The prompt text goes to stderr; the typed bytes never echo.
 //! 6. otherwise: a CLI input error (exit `4`).
 //!
-//! A high-secret is NEVER a required argv flag — automation supplies it through a
-//! file, stdin, or the environment; humans get the hidden prompt. The decoded hex
-//! buffer is zeroized after the bytes are produced.
+//! On every path an identity seed accepts both representations — 64-digit raw
+//! hex or the checksummed `L309-SEED-1…` form; a recipient secret key is not a
+//! seed and stays hex-only.
+//!
+//! A high-secret is NEVER a required argv flag — automation supplies it through
+//! a file, stdin, or the environment; humans get the hidden prompt. The resolved
+//! secret string is zeroized after the bytes are produced.
 //!
 //! ## Non-secret gateway config (`--base-url`, `--api-key`)
 //!
@@ -28,9 +32,13 @@
 
 use std::io::{IsTerminal, Read};
 
-use zeroize::Zeroize;
+use cardanowall::seed_encoding::parse_identity_seed;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::util::{hex_to_bytes, CliError};
+
+/// The exact byte length of the X25519 recipient secret key.
+const X25519_SECRET_KEY_LENGTH: usize = 32;
 
 /// Which high-secret is being resolved — drives the env var, the flag names in
 /// error messages, and the interactive prompt text.
@@ -64,7 +72,7 @@ impl SecretKind {
     /// The interactive hidden-prompt line written to stderr.
     fn prompt(self) -> &'static str {
         match self {
-            SecretKind::Seed => "Enter 32-byte identity seed (hex): ",
+            SecretKind::Seed => "Enter identity seed (hex or L309-SEED-1...): ",
             SecretKind::RecipientKey => "Enter X25519 recipient secret key (hex): ",
         }
     }
@@ -148,12 +156,17 @@ fn trim_secret(raw: &str) -> String {
     raw.trim().to_string()
 }
 
-/// Resolve a high-secret to its raw bytes, length-checked to `expected_len`.
+/// Resolve a high-secret to its raw 32 bytes.
 ///
-/// `required` decides whether a missing secret triggers the interactive prompt
-/// (TTY only) or a hard error. `cmd` and `kind` shape the error/prompt text.
+/// A seed accepts both representations — 64-digit raw hex (0x prefix and
+/// whitespace tolerated) or the checksummed `L309-SEED-1…` bech32 form in
+/// either single case; a recipient key is hex-only. `required` decides whether
+/// a missing secret triggers the interactive prompt (TTY only) or a hard
+/// error. `cmd` and `kind` shape the error/prompt text.
 ///
-/// The intermediate hex string is zeroized before returning.
+/// The intermediate secret string is zeroized before returning, and the
+/// returned buffer is [`Zeroizing`] so the bytes are wiped when the caller
+/// drops them — a resolved secret never outlives its last use in heap.
 ///
 /// # Errors
 ///
@@ -162,23 +175,21 @@ fn trim_secret(raw: &str) -> String {
 pub fn resolve_secret_bytes(
     kind: SecretKind,
     args: &SecretArgs,
-    expected_len: usize,
     required: bool,
     cmd: &str,
     env: &dyn SecretEnv,
-) -> Result<Option<Vec<u8>>, CliError> {
-    let mut hex = match resolve_secret_hex(kind, args, required, cmd, env)? {
-        Some(hex) => hex,
+) -> Result<Option<Zeroizing<Vec<u8>>>, CliError> {
+    let mut secret = match resolve_secret_string(kind, args, required, cmd, env)? {
+        Some(secret) => secret,
         None => return Ok(None),
     };
-    let result = decode_and_check(kind, &hex, expected_len, cmd);
-    hex.zeroize();
+    let result = decode_and_check(kind, &secret, cmd);
+    secret.zeroize();
     result.map(Some)
 }
 
-/// The hex-string half of the resolution chain (no decode), so callers that want
-/// the raw string (e.g. comma-list recipient keys) can post-process it.
-fn resolve_secret_hex(
+/// The string half of the resolution chain (source precedence only, no decode).
+fn resolve_secret_string(
     kind: SecretKind,
     args: &SecretArgs,
     required: bool,
@@ -227,22 +238,41 @@ fn resolve_secret_hex(
     }
 }
 
+/// Decode one resolved secret string to its raw bytes. Seeds route through the
+/// SDK identity-seed parser, so both accepted representations (raw hex and the
+/// checksummed `L309-SEED-1…` form) work on every input path; recipient secret
+/// keys are not seeds and stay hex-only.
+///
+/// Every intermediate copy of the key material is zeroized on every exit path
+/// (including the wrong-length error), and the returned buffer wipes itself
+/// on drop.
 fn decode_and_check(
     kind: SecretKind,
-    hex: &str,
-    expected_len: usize,
+    value: &str,
     cmd: &str,
-) -> Result<Vec<u8>, CliError> {
-    let bytes =
-        hex_to_bytes(hex).map_err(|e| CliError::input(format!("{cmd}: --{} {e}", kind.flag())))?;
-    if bytes.len() != expected_len {
-        return Err(CliError::input(format!(
-            "{cmd}: --{} must decode to exactly {expected_len} bytes (got {})",
-            kind.flag(),
-            bytes.len()
-        )));
+) -> Result<Zeroizing<Vec<u8>>, CliError> {
+    match kind {
+        SecretKind::Seed => parse_identity_seed(value)
+            .map(|mut seed| {
+                let bytes = Zeroizing::new(seed.to_vec());
+                seed.zeroize();
+                bytes
+            })
+            .map_err(|e| CliError::input(format!("{cmd}: --{} {e}", kind.flag()))),
+        SecretKind::RecipientKey => {
+            let bytes = hex_to_bytes(value)
+                .map(Zeroizing::new)
+                .map_err(|e| CliError::input(format!("{cmd}: --{} {e}", kind.flag())))?;
+            if bytes.len() != X25519_SECRET_KEY_LENGTH {
+                return Err(CliError::input(format!(
+                    "{cmd}: --{} must decode to exactly {X25519_SECRET_KEY_LENGTH} bytes (got {})",
+                    kind.flag(),
+                    bytes.len()
+                )));
+            }
+            Ok(bytes)
+        }
     }
-    Ok(bytes)
 }
 
 // ===========================================================================
@@ -407,10 +437,10 @@ mod tests {
             file: Some("/s".to_string()),
             stdin: true,
         };
-        let bytes = resolve_secret_bytes(SecretKind::Seed, &args, 32, true, "identity", &env)
+        let bytes = resolve_secret_bytes(SecretKind::Seed, &args, true, "identity", &env)
             .unwrap()
             .unwrap();
-        assert_eq!(bytes, hex_to_bytes(&seed_hex()).unwrap());
+        assert_eq!(*bytes, hex_to_bytes(&seed_hex()).unwrap());
     }
 
     #[test]
@@ -424,10 +454,10 @@ mod tests {
             stdin: true,
             ..SecretArgs::default()
         };
-        let bytes = resolve_secret_bytes(SecretKind::Seed, &args, 32, true, "identity", &env)
+        let bytes = resolve_secret_bytes(SecretKind::Seed, &args, true, "identity", &env)
             .unwrap()
             .unwrap();
-        assert_eq!(bytes, hex_to_bytes(&seed_hex()).unwrap());
+        assert_eq!(*bytes, hex_to_bytes(&seed_hex()).unwrap());
     }
 
     #[test]
@@ -440,7 +470,7 @@ mod tests {
             value: Some("-".to_string()),
             ..SecretArgs::default()
         };
-        let bytes = resolve_secret_bytes(SecretKind::Seed, &args, 32, true, "identity", &env)
+        let bytes = resolve_secret_bytes(SecretKind::Seed, &args, true, "identity", &env)
             .unwrap()
             .unwrap();
         assert_eq!(bytes.len(), 32);
@@ -456,10 +486,10 @@ mod tests {
             value: Some(seed_hex()),
             ..SecretArgs::default()
         };
-        let bytes = resolve_secret_bytes(SecretKind::Seed, &args, 32, true, "identity", &env)
+        let bytes = resolve_secret_bytes(SecretKind::Seed, &args, true, "identity", &env)
             .unwrap()
             .unwrap();
-        assert_eq!(bytes, hex_to_bytes(&seed_hex()).unwrap());
+        assert_eq!(*bytes, hex_to_bytes(&seed_hex()).unwrap());
     }
 
     #[test]
@@ -471,7 +501,6 @@ mod tests {
         let bytes = resolve_secret_bytes(
             SecretKind::Seed,
             &SecretArgs::default(),
-            32,
             true,
             "identity",
             &env,
@@ -487,7 +516,6 @@ mod tests {
         let err = resolve_secret_bytes(
             SecretKind::Seed,
             &SecretArgs::default(),
-            32,
             true,
             "identity",
             &env,
@@ -503,7 +531,6 @@ mod tests {
         let out = resolve_secret_bytes(
             SecretKind::Seed,
             &SecretArgs::default(),
-            32,
             false,
             "submit",
             &env,
@@ -522,7 +549,6 @@ mod tests {
         let bytes = resolve_secret_bytes(
             SecretKind::Seed,
             &SecretArgs::default(),
-            32,
             true,
             "identity",
             &env,
@@ -542,9 +568,89 @@ mod tests {
         let err = resolve_secret_bytes(
             SecretKind::Seed,
             &SecretArgs::default(),
-            32,
             true,
             "identity",
+            &env,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, 4);
+    }
+
+    /// The checksummed display form of the all-zero seed, as the SDK encodes it.
+    fn zero_seed_encoded() -> String {
+        cardanowall::seed_encoding::encode_identity_seed(&[0u8; 32]).unwrap()
+    }
+
+    #[test]
+    fn seed_accepts_bech32_uppercase_from_env() {
+        let env = FakeEnv {
+            vars: HashMap::from([("CARDANOWALL_SEED".to_string(), zero_seed_encoded())]),
+            ..FakeEnv::default()
+        };
+        let bytes = resolve_secret_bytes(
+            SecretKind::Seed,
+            &SecretArgs::default(),
+            true,
+            "identity",
+            &env,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(*bytes, vec![0u8; 32]);
+    }
+
+    #[test]
+    fn seed_accepts_bech32_lowercase_from_file() {
+        let env = FakeEnv {
+            files: HashMap::from([(
+                "/s".to_string(),
+                format!("{}\n", zero_seed_encoded().to_ascii_lowercase()),
+            )]),
+            ..FakeEnv::default()
+        };
+        let args = SecretArgs {
+            file: Some("/s".to_string()),
+            ..SecretArgs::default()
+        };
+        let bytes = resolve_secret_bytes(SecretKind::Seed, &args, true, "identity", &env)
+            .unwrap()
+            .unwrap();
+        assert_eq!(*bytes, vec![0u8; 32]);
+    }
+
+    #[test]
+    fn seed_rejects_corrupted_bech32_as_input_error() {
+        // Flip the final checksum character of the valid lowercase form.
+        let mut corrupted = zero_seed_encoded().to_ascii_lowercase();
+        let last = corrupted.pop().expect("encoded seed is non-empty");
+        corrupted.push(if last == 'q' { 'p' } else { 'q' });
+        let env = FakeEnv {
+            vars: HashMap::from([("CARDANOWALL_SEED".to_string(), corrupted)]),
+            ..FakeEnv::default()
+        };
+        let err = resolve_secret_bytes(
+            SecretKind::Seed,
+            &SecretArgs::default(),
+            true,
+            "identity",
+            &env,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, 4);
+    }
+
+    #[test]
+    fn recipient_key_stays_hex_only() {
+        // The bech32 seed form is NOT a recipient secret key; it must be refused.
+        let env = FakeEnv {
+            vars: HashMap::from([("CARDANOWALL_RECIPIENT_KEY".to_string(), zero_seed_encoded())]),
+            ..FakeEnv::default()
+        };
+        let err = resolve_secret_bytes(
+            SecretKind::RecipientKey,
+            &SecretArgs::default(),
+            true,
+            "inbox",
             &env,
         )
         .unwrap_err();

@@ -20,16 +20,16 @@ use std::io::Read;
 
 use cardanowall::client::{assemble_cose_sign1, prepare_sig_structure, OffHostSignError, Signer};
 use cardanowall::poe_standard::{
-    encode_poe_record, validate_poe_record, ItemEntry, PoeRecord, ValidateResult,
+    encode_poe_record, validate_poe_record, ItemEntry, PoeRecord, ValidateResult, ValidatorOptions,
 };
 use cardanowall::seed_derive::signer_from_seed;
 use clap::{Args, Subcommand};
 use serde::Serialize;
+use zeroize::Zeroizing;
 
 use crate::secret::{resolve_secret_bytes, SecretEnv, SecretKind, SystemSecretEnv};
 use crate::util::{bytes_to_hex, hex_to_bytes, CliError};
 
-const MASTER_SEED_BYTES: usize = 32;
 const ED25519_PUBKEY_BYTES: usize = 32;
 const ED25519_SIGNATURE_BYTES: usize = 64;
 const SHA2_256_DIGEST_BYTES: usize = 32;
@@ -87,8 +87,9 @@ pub struct RecordSource {
 /// master seed. Carries the raw flag plus its `*-file` / `*-stdin` variants.
 #[derive(Debug, Args, Clone, Default)]
 pub struct SeedSource {
-    /// 32-byte master identity seed (hex). INSECURE on argv (shell history / ps /
-    /// CI logs); prefer --seed-file / --seed-stdin / CARDANOWALL_SEED.
+    /// 32-byte master identity seed: 64-digit hex or the checksummed
+    /// L309-SEED-1... form. INSECURE on argv (shell history / ps / CI logs);
+    /// prefer --seed-file / --seed-stdin / CARDANOWALL_SEED.
     #[arg(long)]
     pub seed: Option<String>,
     /// read the seed from a file (trailing whitespace trimmed).
@@ -248,7 +249,7 @@ fn record_from_cbor_bytes(raw: &[u8], label: &str) -> Result<PoeRecord, CliError
     } else {
         raw.to_vec()
     };
-    match validate_poe_record(&cbor) {
+    match validate_poe_record(&cbor, &ValidatorOptions::default()) {
         ValidateResult::Ok { record, .. } => Ok(*record),
         ValidateResult::Fail { issues } => {
             let code = issues.first().map_or("UNKNOWN", |i| i.code.code());
@@ -284,16 +285,9 @@ fn resolve_record(source: &RecordSource) -> Result<PoeRecord, CliError> {
 
 /// Resolve the master seed through the shared secret layer (file > stdin > argv >
 /// env > hidden prompt on a TTY > error). The seed is required here.
-fn resolve_seed(source: &SeedSource, env: &dyn SecretEnv) -> Result<Vec<u8>, CliError> {
-    resolve_secret_bytes(
-        SecretKind::Seed,
-        &source.secret_args(),
-        MASTER_SEED_BYTES,
-        true,
-        "sign",
-        env,
-    )
-    .map(|opt| opt.expect("a required seed resolves to Some or errors"))
+fn resolve_seed(source: &SeedSource, env: &dyn SecretEnv) -> Result<Zeroizing<Vec<u8>>, CliError> {
+    resolve_secret_bytes(SecretKind::Seed, &source.secret_args(), true, "sign", env)
+        .map(|opt| opt.expect("a required seed resolves to Some or errors"))
 }
 
 fn resolve_pubkey_hex(hex: Option<&str>, label: &str) -> Result<Vec<u8>, CliError> {
@@ -474,7 +468,7 @@ mod tests {
         let mut signed = record;
         signed.sigs = Some(vec![assembled.sig_entry]);
         let cbor = encode_poe_record(&signed).unwrap();
-        assert!(validate_poe_record(&cbor).is_ok());
+        assert!(validate_poe_record(&cbor, &ValidatorOptions::default()).is_ok());
     }
 
     #[test]

@@ -19,7 +19,8 @@ use cardanowall::verifier::{
 use clap::Args;
 
 use crate::config::{
-    read_config_file, resolve_gateways, GatewayFlags, SystemConfigEnv, SystemGatewayEnv,
+    read_config_file, resolve_gateways, GatewayFlags, ResolvedGateways, SystemConfigEnv,
+    SystemGatewayEnv,
 };
 use crate::output::render_human_report;
 use crate::secret::{SecretEnv, SystemSecretEnv};
@@ -55,18 +56,21 @@ pub struct VerifyArgs {
     /// Extra deny-list entries (repeatable; or env CARDANOWALL_DENY_HOST).
     #[arg(long = "deny-host")]
     pub deny_host: Vec<String>,
-    /// X25519 recipient secret key for sealed PoE (repeatable; `itemIndex:hex` or
-    /// `hex`). INSECURE on argv; prefer --secret-key-file / --secret-key-stdin /
-    /// CARDANOWALL_RECIPIENT_KEY (comma/space-separated for several).
+    /// Recipient secret key for sealed PoE, as bare hex (repeatable; tried
+    /// against every sealed item). INSECURE on argv; prefer --secret-key-file /
+    /// --secret-key-stdin / CARDANOWALL_RECIPIENT_KEY (comma/space-separated for
+    /// several).
     #[arg(long = "secret-key")]
     pub secret_key: Vec<String>,
-    /// read recipient secret key(s) from a file (one per line; `itemIndex:hex` ok).
+    /// read recipient secret key(s) from a file (one hex key per line).
     #[arg(long = "secret-key-file")]
     pub secret_key_file: Option<String>,
     /// read recipient secret key(s) from stdin (one per line).
     #[arg(long = "secret-key-stdin")]
     pub secret_key_stdin: bool,
-    /// Skip URI / leaves-list fetches (offline switch).
+    /// Suppress content fetches (item URIs, sealed ciphertext, Merkle
+    /// leaves-lists); the transaction is still resolved from the Cardano
+    /// gateway chain.
     #[arg(long = "no-fetch")]
     pub no_fetch: bool,
     /// Emit machine-readable VerifyReport JSON on stdout.
@@ -84,16 +88,13 @@ const PROFILES: [(&str, Profile); 4] = [
     ("recipient-sealed", Profile::RecipientSealed),
 ];
 
-/// A parsed `--secret-key` decryption spec.
-struct DecryptionSpec {
-    item_index: i64,
-    recipient_secret_key: Vec<u8>,
-}
-
 fn parse_threshold(raw: Option<&str>) -> Result<Option<u32>, CliError> {
     let Some(raw) = raw else { return Ok(None) };
-    match raw.parse::<i64>() {
-        Ok(n) if n >= 0 && n.to_string() == raw => Ok(Some(n as u32)),
+    // Parse as `u32` so negatives and values beyond `u32::MAX` are rejected
+    // outright rather than wrapped; the round-trip comparison additionally
+    // rejects a leading `+`, leading zeros, and embedded whitespace.
+    match raw.parse::<u32>() {
+        Ok(n) if n.to_string() == raw => Ok(Some(n)),
         _ => Err(CliError::input(format!(
             "verify: --threshold must be a non-negative integer; got \"{raw}\""
         ))),
@@ -149,29 +150,17 @@ fn split_secret_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_secret_key(raw: &str) -> Result<DecryptionSpec, CliError> {
-    let (idx, hex) = match raw.split_once(':') {
-        Some((idx_raw, hex)) => {
-            let idx: i64 = idx_raw.parse().map_err(|_| {
-                CliError::input(format!(
-                    "verify: --secret-key index must be a non-negative integer; got \"{raw}\""
-                ))
-            })?;
-            if idx < 0 || idx.to_string() != idx_raw {
-                return Err(CliError::input(format!(
-                    "verify: --secret-key index must be a non-negative integer; got \"{raw}\""
-                )));
-            }
-            (idx, hex)
-        }
-        None => (0, raw),
-    };
-    let bytes =
-        hex_to_bytes(hex).map_err(|e| CliError::input(format!("verify: --secret-key {e}")))?;
-    Ok(DecryptionSpec {
-        item_index: idx,
-        recipient_secret_key: bytes,
-    })
+/// Parse one `--secret-key` spec: the bare key hex. The keyring is global to
+/// the run — every key is tried against every sealed item — so a spec carries
+/// no item index.
+fn parse_secret_key(raw: &str) -> Result<Vec<u8>, CliError> {
+    if raw.contains(':') {
+        return Err(CliError::input(format!(
+            "verify: --secret-key takes the bare key hex (keys are tried against every \
+             sealed item, so there is no per-item index); got \"{raw}\""
+        )));
+    }
+    hex_to_bytes(raw).map_err(|e| CliError::input(format!("verify: --secret-key {e}")))
 }
 
 /// Default profile discriminator when the user does not pass `--profile`:
@@ -210,11 +199,11 @@ pub fn run(args: VerifyArgs) -> Result<(), CliError> {
     }
     let threshold = parse_threshold(args.threshold.as_deref())?;
     let secret_key_specs = collect_secret_key_specs(&args, &SystemSecretEnv)?;
-    let mut decryption: Vec<DecryptionSpec> = Vec::new();
+    let mut secret_keys: Vec<Vec<u8>> = Vec::new();
     for raw in &secret_key_specs {
-        decryption.push(parse_secret_key(raw)?);
+        secret_keys.push(parse_secret_key(raw)?);
     }
-    let profile = choose_profile(&args, !decryption.is_empty())?;
+    let profile = choose_profile(&args, !secret_keys.is_empty())?;
 
     let config = read_config_file(&SystemConfigEnv)?;
     let flags = GatewayFlags {
@@ -226,7 +215,33 @@ pub fn run(args: VerifyArgs) -> Result<(), CliError> {
         deny_host: args.deny_host.clone(),
     };
     let resolved = resolve_gateways(&flags, &SystemGatewayEnv, config.as_ref())?;
+    let input = build_verify_input(&args, profile, &resolved, secret_keys);
 
+    let report = verify_tx(&input);
+
+    if args.json {
+        let dict = verify_report_to_dict(&report);
+        let rendered = if args.pretty {
+            serde_json::to_string_pretty(&dict)
+        } else {
+            serde_json::to_string(&dict)
+        }
+        .expect("VerifyReport dict serialises");
+        println!("{rendered}");
+    } else {
+        render_human_report(&report);
+    }
+
+    exit_code_for_report(&report)
+}
+
+/// Map the parsed CLI options onto the SDK verifier's input shape.
+fn build_verify_input(
+    args: &VerifyArgs,
+    profile: Profile,
+    resolved: &ResolvedGateways,
+    secret_keys: Vec<Vec<u8>>,
+) -> VerifyTxInput<'static> {
     // SSRF posture: when the user supplies no `--deny-host`, fall back to the
     // canonical deny-list so a `verify` run can never be coaxed into fetching from
     // the operator's own host or localhost.
@@ -249,52 +264,37 @@ pub fn run(args: VerifyArgs) -> Result<(), CliError> {
             .unwrap_or(CONFIRMATION_DEPTH_THRESHOLD_DEFAULT),
     );
     input.deny_hosts = Some(deny_hosts);
-    if !decryption.is_empty() {
+    if !secret_keys.is_empty() {
         input.decryption = Some(
-            decryption
+            secret_keys
                 .into_iter()
-                .map(|d| Decryption::Recipient {
-                    item_index: d.item_index,
-                    recipient_secret_key: d.recipient_secret_key,
+                .map(|recipient_secret_key| Decryption::Recipient {
+                    recipient_secret_key,
                 })
                 .collect(),
         );
     }
-    // `--no-fetch` is the offline switch: it suppresses the verifier's outbound
-    // URI / Merkle-leaves fetches. The Rust verifier honours this by omitting the
-    // gateway chains used for content fetch (the resolve step still runs); we
-    // signal it by clearing the arweave/ipfs chains so no item ciphertext or
-    // leaves-list fetch is attempted.
+    // `--no-fetch` flips the verifier's master content-fetch switch: item-URI,
+    // ciphertext, and Merkle leaves-list downloads are suppressed and those
+    // claims report as not checked. The transaction itself is still resolved
+    // from the Cardano gateway chain — the switch governs content, not the
+    // metadata lookup — so the resolved gateway chains stay as configured. (An
+    // emptied chain would not mean "offline" anyway: the verifier substitutes
+    // its built-in defaults for an absent or empty Arweave chain.)
     if args.no_fetch {
-        input.arweave_gateway_chain = Some(Vec::new());
-        input.ipfs_gateway_chain = Some(Vec::new());
+        input.fetch_content = false;
     }
-
-    let report = verify_tx(&input);
-
-    if args.json {
-        let dict = verify_report_to_dict(&report);
-        let rendered = if args.pretty {
-            serde_json::to_string_pretty(&dict)
-        } else {
-            serde_json::to_string(&dict)
-        }
-        .expect("VerifyReport dict serialises");
-        println!("{rendered}");
-    } else {
-        render_human_report(&report);
-    }
-
-    exit_code_for_report(&report)
+    input
 }
 
 /// Map a verifier report onto the CLI exit-code contract.
 ///
-/// The verdict's own exit code (`0`/`1`/`2`/`3`) is passed through verbatim; a
-/// non-zero code becomes a silent [`CliError`] (the already-emitted report is the
-/// user-facing output, so no extra stderr line is added).
+/// The verdict's paired exit code (`0` valid / `1` failed / `2` unverifiable /
+/// `3` pending) is passed through verbatim; a non-zero code becomes a silent
+/// [`CliError`] (the already-emitted report is the user-facing output, so no
+/// extra stderr line is added).
 pub fn exit_code_for_report(report: &cardanowall::verifier::VerifyReport) -> Result<(), CliError> {
-    let code = i32::from(report.exit_code.as_u8());
+    let code = i32::from(report.verdict.exit_code());
     if code == 0 {
         Ok(())
     } else {
@@ -339,15 +339,62 @@ mod tests {
         assert_eq!(parse_threshold(Some("-1")).unwrap_err().code, 4);
         assert_eq!(parse_threshold(Some("15")).unwrap(), Some(15));
         assert_eq!(parse_threshold(None).unwrap(), None);
+        // The full u32 range is accepted; anything beyond it is rejected, not
+        // wrapped (4294967297 must never become 1).
+        assert_eq!(parse_threshold(Some("4294967295")).unwrap(), Some(u32::MAX));
+        assert_eq!(parse_threshold(Some("4294967296")).unwrap_err().code, 4);
+        assert_eq!(parse_threshold(Some("4294967297")).unwrap_err().code, 4);
+        // Non-canonical spellings fail the round-trip comparison.
+        assert_eq!(parse_threshold(Some("+15")).unwrap_err().code, 4);
+        assert_eq!(parse_threshold(Some("015")).unwrap_err().code, 4);
     }
 
     #[test]
-    fn secret_key_parses_index_prefix() {
-        let spec = parse_secret_key(&format!("3:{}", "ab".repeat(32))).unwrap();
-        assert_eq!(spec.item_index, 3);
-        assert_eq!(spec.recipient_secret_key.len(), 32);
-        let bare = parse_secret_key(&"cd".repeat(32)).unwrap();
-        assert_eq!(bare.item_index, 0);
+    fn no_fetch_suppresses_content_fetch_and_leaves_gateway_chains_intact() {
+        let resolved = ResolvedGateways {
+            cardano_gateway_chain: vec!["https://cardano.example".to_string()],
+            arweave_gateway_chain: vec!["https://arweave.example".to_string()],
+            ipfs_gateway_chain: Some(vec!["https://ipfs.example".to_string()]),
+            ..ResolvedGateways::default()
+        };
+        let mut args = base_args(&"0".repeat(64));
+
+        args.no_fetch = true;
+        let input = build_verify_input(&args, Profile::Signed, &resolved, vec![]);
+        assert!(!input.fetch_content);
+        // The chains must stay as resolved: the tx lookup still runs, and an
+        // emptied Arweave chain would fall back to the verifier's built-in
+        // defaults instead of meaning "no fetch".
+        assert_eq!(
+            input.cardano_gateway_chain,
+            Some(vec!["https://cardano.example".to_string()])
+        );
+        assert_eq!(
+            input.arweave_gateway_chain,
+            Some(vec!["https://arweave.example".to_string()])
+        );
+        assert_eq!(
+            input.ipfs_gateway_chain,
+            Some(vec!["https://ipfs.example".to_string()])
+        );
+
+        args.no_fetch = false;
+        assert!(build_verify_input(&args, Profile::Signed, &resolved, vec![]).fetch_content);
+    }
+
+    #[test]
+    fn secret_key_parses_bare_hex_and_rejects_indexed_specs() {
+        let key = parse_secret_key(&"cd".repeat(32)).unwrap();
+        assert_eq!(key.len(), 32);
+        // The keyring is global to the run; a per-item index prefix is not a
+        // valid spec and must fail as CLI input (exit 4) with a clear message.
+        assert_eq!(
+            parse_secret_key(&format!("3:{}", "ab".repeat(32)))
+                .unwrap_err()
+                .code,
+            4
+        );
+        assert_eq!(parse_secret_key("not-hex").unwrap_err().code, 4);
     }
 
     #[test]

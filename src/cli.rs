@@ -46,15 +46,16 @@ use crate::util::version::version_string;
         ENVIRONMENT (consistent across every command):\n  \
         CARDANOWALL_BASE_URL       gateway base URL        (--base-url)\n  \
         CARDANOWALL_API_KEY        opaque bearer API key   (--api-key)\n  \
-        CARDANOWALL_SEED           32-byte identity seed   (--seed)\n  \
-        CARDANOWALL_RECIPIENT_KEY  X25519 recipient key    (--secret-key)\n  \
+        CARDANOWALL_SEED           identity seed: hex or L309-SEED-1...  (--seed)\n  \
+        CARDANOWALL_RECIPIENT_KEY  X25519 recipient key (hex)  (--secret-key)\n  \
         CARDANOWALL_CARDANO_GATEWAY / CARDANOWALL_ARWEAVE_GATEWAY /\n  \
         CARDANOWALL_IPFS_GATEWAY / CARDANOWALL_BLOCKFROST_PROJECT_ID /\n  \
         CARDANOWALL_CONFIRMATION_DEPTH_THRESHOLD / CARDANOWALL_DENY_HOST\n  \
         CARDANOWALL_CONFIG_PATH    overrides ~/.cardanowall/config.toml\n\n\
         High-secret flags (--seed, --secret-key) also accept a *-file / *-stdin\n\
-        variant and, on a TTY, a hidden interactive prompt; the raw --seed/\n\
-        --secret-key hex flag is INSECURE (shell history / ps / CI logs).",
+        variant and, on a TTY, a hidden interactive prompt. --seed takes 64-digit\n\
+        hex or the checksummed L309-SEED-1... form; the raw --seed / --secret-key\n\
+        argv flag is INSECURE (shell history / ps / CI logs).",
     version = version_string(),
     disable_version_flag = true
 )]

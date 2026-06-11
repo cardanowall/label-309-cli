@@ -5,12 +5,12 @@
 //!
 //! 1. **Corpus replay** — for every captured mainnet record, drive the SDK
 //!    verifier with a deterministic mock transport and confirm the CLI's
-//!    verdict → exit-code mapping reproduces the golden report's `exit_code`. The
+//!    verdict → exit-code mapping reproduces the golden report's `exitCode`. The
 //!    same replay asserts service-independence: no call ever reaches a
 //!    deny-listed host.
 //! 2. **Network-class replay** — an NXDOMAIN-style transport that fails every
-//!    gateway call yields a `failed` verdict and exit `2`, with no deny-listed
-//!    egress.
+//!    gateway call yields an `unverifiable` verdict and exit `2`, with no
+//!    deny-listed egress.
 //! 3. **CLI-input cases** — bad tx hash, unparseable gateway URL, bad threshold,
 //!    and an unknown subcommand all exit `4`, driven through the real arg parser.
 
@@ -27,8 +27,8 @@ use cardanowall_cli::commands::verify::exit_code_for_report;
 
 const KOIOS_URL: &str = "https://api.koios.rest/api/v1";
 const CONFORMANCE_DENY: [&str; 4] = [
-    "cardanowall.com",
-    "*.cardanowall.com",
+    "operator.example",
+    "*.operator.example",
     "localhost",
     "127.0.0.1",
 ];
@@ -58,7 +58,7 @@ impl MockTransport {
         let capture = |key: &str| captures.get(key).map(compact_json);
         let mut arweave = HashMap::new();
         if let Some(map) = captures
-            .get("arweave_envelope_responses")
+            .get("arweave_responses")
             .and_then(serde_json::Value::as_object)
         {
             for (ar_tx_id, hex_str) in map {
@@ -131,6 +131,10 @@ impl FetchTransport for MockTransport {
     }
 }
 
+/// Build the recipient keyring for a corpus record from its
+/// `recipient_secret_keys` field (absent for non-sealed records). The keyring
+/// is global to the run; per-entry item indices in the corpus identify which
+/// item the key was minted for but are not part of the input shape.
 fn corpus_decryption_inputs(record: &serde_json::Value) -> Vec<Decryption> {
     record
         .get("recipient_secret_keys")
@@ -139,12 +143,10 @@ fn corpus_decryption_inputs(record: &serde_json::Value) -> Vec<Decryption> {
             entries
                 .iter()
                 .filter_map(|e| {
-                    let item_index = e.get("item_index").and_then(serde_json::Value::as_i64)?;
                     let secret_key =
                         hex::decode(e.get("secret_key").and_then(serde_json::Value::as_str)?)
                             .ok()?;
                     Some(Decryption::Recipient {
-                        item_index,
                         recipient_secret_key: secret_key,
                     })
                 })
@@ -203,13 +205,13 @@ fn corpus_exit_codes_match_golden_through_cli_mapping() {
 
         let report = verify_tx(&input);
 
-        // The CLI passes the verifier's exit code straight through; assert it
-        // equals the golden report's exit_code.
+        // The CLI passes the verifier's verdict-paired exit code straight
+        // through; assert it equals the golden report's exitCode.
         let golden_path = common::sdk_ts_fixtures()
             .join("verify-reports")
             .join(format!("{tx_hash}.json"));
         let golden = common::read_fixture_json(&golden_path);
-        let expected_exit = golden["exit_code"].as_i64().expect("golden exit_code") as i32;
+        let expected_exit = golden["exitCode"].as_i64().expect("golden exitCode") as i32;
         assert_eq!(
             cli_exit_code(&report),
             expected_exit,
@@ -219,9 +221,9 @@ fn corpus_exit_codes_match_golden_through_cli_mapping() {
         // Service-independence: no call ever reached the operator's own host.
         assert!(
             report
-                .http_calls
+                .audit_trail
                 .iter()
-                .all(|c| !c.url.contains("cardanowall.com")),
+                .all(|c| !c.url.contains("operator.example")),
             "a call reached a deny-listed host for tx {tx_hash}"
         );
         replayed += 1;
@@ -246,7 +248,7 @@ fn corpus_exercises_the_happy_path_end_to_end() {
                 .join(format!("{tx_hash}.json")),
         );
         assert_eq!(
-            golden["exit_code"].as_i64().unwrap(),
+            golden["exitCode"].as_i64().unwrap(),
             0,
             "golden for {tx_hash} is not exit-0; the corpus-replay test must cover its class"
         );
@@ -256,8 +258,8 @@ fn corpus_exercises_the_happy_path_end_to_end() {
 #[test]
 fn network_failure_maps_to_exit_2_with_service_independence() {
     // An NXDOMAIN / connection-refused transport: every gateway call fails. The
-    // verifier exhausts the chain → failed verdict → network class (exit 2). No
-    // call may reach a deny-listed host.
+    // verifier exhausts the chain → unverifiable verdict → network class
+    // (exit 2). No call may reach a deny-listed host.
     struct NxdomainTransport {
         seen: Mutex<Vec<String>>,
     }
@@ -286,9 +288,9 @@ fn network_failure_maps_to_exit_2_with_service_independence() {
     assert_eq!(cli_exit_code(&report), 2, "network failure must exit 2");
     assert!(
         report
-            .http_calls
+            .audit_trail
             .iter()
-            .all(|c| !c.url.contains("cardanowall.com")),
+            .all(|c| !c.url.contains("operator.example")),
         "a call reached a deny-listed host"
     );
 }
@@ -310,7 +312,7 @@ fn deny_host_violation_maps_to_exit_1() {
     }
     let transport = UnusedTransport;
     let mut input = VerifyTxInput::new("cd".repeat(32));
-    input.cardano_gateway_chain = Some(vec!["https://api.cardanowall.com/v1".to_string()]);
+    input.cardano_gateway_chain = Some(vec!["https://api.operator.example/v1".to_string()]);
     input.deny_hosts = Some(CONFORMANCE_DENY.iter().map(|s| (*s).to_string()).collect());
     input.fetch_outbound = Some(&transport);
 

@@ -173,6 +173,51 @@ fn json_error_object_on_failing_command() {
 }
 
 #[test]
+fn submit_chunk_bytes_flag_parses_and_is_numeric() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+
+    // A numeric `--chunk-bytes` parses, so the command proceeds past clap to its
+    // own credential-resolution input error and emits the STRUCTURED submit JSON
+    // error (a clap parse failure would print plain usage text, not this object).
+    // That structured object is the proof the typed `u64` flag was accepted.
+    let leaves = dir.path().join("leaves.txt");
+    std::fs::write(&leaves, format!("{}\n", "ab".repeat(32))).unwrap();
+    let ok = cmd(&config, &home)
+        .args([
+            "submit",
+            "--merkle",
+            leaves.to_str().unwrap(),
+            "--chunk-bytes",
+            "67108864",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(ok.status.code(), Some(4), "no creds → input error");
+    let stderr = String::from_utf8(ok.stderr).unwrap();
+    let v: serde_json::Value = serde_json::from_str(stderr.trim())
+        .expect("a parsed --chunk-bytes reaches the structured submit error");
+    assert_eq!(v["error"]["command"], "submit");
+
+    // A non-numeric `--chunk-bytes` is a clap type error: still exit 4, but plain
+    // usage text on stderr rather than the structured submit JSON object — which
+    // confirms the flag is a typed integer, not a free string.
+    let bad = cmd(&config, &home)
+        .args(["submit", "--chunk-bytes", "not-a-number"])
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(4));
+    let bad_stderr = String::from_utf8(bad.stderr).unwrap();
+    assert!(
+        serde_json::from_str::<serde_json::Value>(bad_stderr.trim()).is_err(),
+        "a clap type error is plain usage text, not a JSON error object"
+    );
+}
+
+#[test]
 fn global_json_flag_also_triggers_structured_error() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config.toml");

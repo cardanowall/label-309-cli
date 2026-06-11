@@ -9,6 +9,12 @@
 //! - `--merkle <leaves-file>`  read one 64-hex leaf per line, build a Merkle tree,
 //!   anchor the root + leaves-list (Arweave)
 //!
+//! Storage uploads (the `--merkle` leaves-list) are size-gated: a blob at or under
+//! the resumable threshold rides the single-shot upload; a larger blob uploads in
+//! resumable chunks, so an interrupted transfer over a flaky link resumes from the
+//! server's missing set instead of restarting. `--chunk-bytes` tunes the chunk
+//! size; the server's per-chunk ceiling clamps it down when tighter.
+//!
 //! Pricing protocol: each submit quotes the price, then passes the `quote_id` to
 //! the publish helper; the server consumes the quote atomically with the record
 //! insert.
@@ -41,7 +47,6 @@ use crate::secret::{
 use crate::util::{bytes_to_hex, hex_to_bytes, CliError};
 
 const SHA2_256_DIGEST_BYTES: usize = 32;
-const MASTER_SEED_BYTES: usize = 32;
 const HEX_PREFIX_BYTES_PER_LEAF: u64 = 32;
 // Conservative byte-budget inputs to the quote; the server re-prices.
 const HASH_RECORD_BYTES_ESTIMATE: u64 = 256;
@@ -66,8 +71,9 @@ pub struct SubmitArgs {
     /// profile). Required.
     #[arg(long = "api-key")]
     pub api_key: Option<String>,
-    /// 32-byte master identity seed (hex). Omit to publish unsigned. INSECURE on
-    /// argv (shell history / ps / CI logs); prefer --seed-file / --seed-stdin /
+    /// 32-byte master identity seed: 64-digit hex or the checksummed
+    /// L309-SEED-1... form. Omit to publish unsigned. INSECURE on argv (shell
+    /// history / ps / CI logs); prefer --seed-file / --seed-stdin /
     /// CARDANOWALL_SEED.
     #[arg(long)]
     pub seed: Option<String>,
@@ -84,6 +90,13 @@ pub struct SubmitArgs {
     /// use this saved gateway profile (overrides the config default_gateway).
     #[arg(long = "gateway-profile")]
     pub gateway_profile: Option<String>,
+    /// chunk size in bytes for a resumable storage upload (--merkle leaves-list).
+    /// A blob over the resumable threshold uploads in chunks so an interrupted
+    /// transfer over a flaky link resumes instead of restarting; one at or under
+    /// it rides the single-shot path. The server's per-chunk ceiling clamps this
+    /// down when it is tighter. Omit for the default.
+    #[arg(long = "chunk-bytes")]
+    pub chunk_bytes: Option<u64>,
     /// emit a machine-readable JSON summary on stdout.
     #[arg(long)]
     pub json: bool,
@@ -170,7 +183,6 @@ fn resolve_signer(args: &SubmitArgs, env: &dyn SecretEnv) -> Result<Option<SeedS
     let Some(seed) = resolve_secret_bytes(
         SecretKind::Seed,
         &args.seed_secret_args(),
-        MASTER_SEED_BYTES,
         false,
         "submit",
         env,
@@ -465,6 +477,7 @@ pub fn run(args: SubmitArgs) -> Result<(), CliError> {
                     hash_alg: None,
                     signer: signer_ref,
                     idempotency_key: None,
+                    chunk_bytes: args.chunk_bytes,
                 })
                 .map_err(map_publish_error)?;
             emit_outcome(
@@ -523,6 +536,7 @@ mod tests {
             seed_stdin: false,
             base_url: None,
             gateway_profile: None,
+            chunk_bytes: None,
             json: false,
         }
     }

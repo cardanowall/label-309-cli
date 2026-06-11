@@ -9,6 +9,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > Pre-1.0 versions do not carry the stability guarantees of
 > [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-06-11
+
+### Changed
+
+- Track the `cardanowall` SDK 0.4.0, which finalizes the sealed-PoE construction and de-chunks record fields (breaking wire-format changes — records sealed by earlier releases do not decrypt or verify under 0.4.0, and vice versa) and reworks verification around a four-state verdict.
+- **BREAKING (`verify`):** Exit codes pair with the verdict — `0` valid, `3` pending, `2` unverifiable, `1` failed — and the `--json` report uses the reworked schema (camelCase fields, positional `items`/`merkle` results, severity-tagged issues). A deny-host violation dominates the outcome.
+- `--no-fetch` governs content fetches only: item URIs, sealed ciphertext, and Merkle leaves-lists are not fetched (those claims report as not checked), while the transaction metadata is still resolved and verified on-chain.
+- Seed inputs accept both the checksummed `L309-SEED-1…` form and raw hex.
+
+### Added
+
+- A run-global recipient keyring for sealed records: repeatable `--secret-key` (bare hex), `--secret-key-file`, and `--secret-key-stdin`; every supplied key is tried against every sealed item.
+
 ## [0.3.0] - 2026-06-06
 
 ### Changed

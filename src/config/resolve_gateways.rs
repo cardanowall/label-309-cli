@@ -147,26 +147,25 @@ fn pick_threshold(
     if let Some(e) = env {
         let t = e.trim();
         if !t.is_empty() {
-            let n: i64 = t.parse().map_err(|_| {
+            // Parse as `u32` so negatives and values beyond `u32::MAX` are
+            // rejected outright rather than wrapped.
+            let n: u32 = t.parse().map_err(|_| {
                 CliError::input(format!(
                     "verify: CARDANOWALL_CONFIRMATION_DEPTH_THRESHOLD must be a non-negative integer; got \"{e}\""
                 ))
             })?;
-            if n < 0 {
-                return Err(CliError::input(format!(
-                    "verify: CARDANOWALL_CONFIRMATION_DEPTH_THRESHOLD must be a non-negative integer; got \"{e}\""
-                )));
-            }
-            return Ok(Some(n as u32));
+            return Ok(Some(n));
         }
     }
     if let Some(c) = cfg {
-        if c < 0 {
-            return Err(CliError::input(format!(
+        // TOML integers are i64; the checked conversion rejects negatives and
+        // values beyond `u32::MAX` rather than wrapping them.
+        let n = u32::try_from(c).map_err(|_| {
+            CliError::input(format!(
                 "verify: config-file confirmation_depth_threshold must be a non-negative integer; got {c}"
-            )));
-        }
-        return Ok(Some(c as u32));
+            ))
+        })?;
+        return Ok(Some(n));
     }
     Ok(None)
 }
@@ -401,6 +400,47 @@ mod tests {
             ..GatewayFlags::default()
         };
         assert!(resolve_gateways(&flags, &env(&[]), None).is_ok());
+    }
+
+    #[test]
+    fn threshold_env_accepts_u32_max_and_rejects_beyond() {
+        let max = resolve_gateways(
+            &GatewayFlags::default(),
+            &env(&[("CARDANOWALL_CONFIRMATION_DEPTH_THRESHOLD", "4294967295")]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(max.confirmation_depth_threshold, Some(u32::MAX));
+        // Beyond u32::MAX must fail loudly (4294967297 must never become 1).
+        for bad in ["4294967296", "4294967297", "-1", "banana"] {
+            let err = resolve_gateways(
+                &GatewayFlags::default(),
+                &env(&[("CARDANOWALL_CONFIRMATION_DEPTH_THRESHOLD", bad)]),
+                None,
+            )
+            .unwrap_err();
+            assert_eq!(err.code, 4, "env threshold {bad:?} must be an input error");
+        }
+    }
+
+    #[test]
+    fn threshold_config_accepts_u32_max_and_rejects_beyond() {
+        let cfg = |threshold: i64| CardanoWallConfig {
+            confirmation_depth_threshold: Some(threshold),
+            ..CardanoWallConfig::default()
+        };
+        let max = resolve_gateways(
+            &GatewayFlags::default(),
+            &env(&[]),
+            Some(&cfg(i64::from(u32::MAX))),
+        )
+        .unwrap();
+        assert_eq!(max.confirmation_depth_threshold, Some(u32::MAX));
+        for bad in [-1i64, 4_294_967_296, 4_294_967_297] {
+            let err =
+                resolve_gateways(&GatewayFlags::default(), &env(&[]), Some(&cfg(bad))).unwrap_err();
+            assert_eq!(err.code, 4, "config threshold {bad} must be an input error");
+        }
     }
 
     #[test]

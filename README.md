@@ -82,8 +82,12 @@ cardanowall verify <tx-hash> \
 ```
 
 Sealed proofs: pass `--secret-key <hex>` (or `--secret-key-file` / `--secret-key-stdin`,
-repeatable, `itemIndex:hex` or `hex`) to decrypt and recompute plaintext hashes.
-`--no-fetch` skips all URI/leaves fetches (fully offline structural+signature check).
+repeatable) to decrypt and recompute plaintext hashes. The keyring is global to
+the run — every supplied key is tried against every sealed item.
+`--no-fetch` suppresses content fetches (item URIs, sealed ciphertext, Merkle
+leaves-lists) — unfetched claims report as not checked. The transaction itself is
+still resolved from the Cardano gateway chain, so structural validation and
+signature checks run against the real on-chain record.
 
 ### `submit`
 
@@ -116,6 +120,11 @@ Derive and print the public identity from a 32-byte master seed: Ed25519/X25519/
 X-Wing public keys, both age recipient strings, and a short display fingerprint.
 Fully offline; no network, no API key. `--json` emits the full X-Wing key.
 
+The seed is accepted in either representation, here and on every other command:
+64-digit raw hex (`0x` prefix and whitespace tolerated) or the checksummed
+`L309-SEED-1…` bech32 form in a single case (the lowercase twin is equally
+valid; mixed case is rejected).
+
 ### `merkle build | verify`
 
 ```bash
@@ -126,8 +135,8 @@ cardanowall merkle verify --root <hex32> --leaf <hex32> --proof proof.json
 ### `inbox sync | list | decrypt`
 
 Discover, list, and decrypt sealed PoE addressed to your identity. Raw-seed-first:
-identify with `--seed <hex>` or a raw `--secret-key <hex>` (plus the `-file`/`-stdin`
-variants) — never an account envelope.
+identify with `--seed` (hex or `L309-SEED-1…`) or a raw `--secret-key <hex>` (plus
+the `-file`/`-stdin` variants) — never an account envelope.
 
 ```bash
 cardanowall inbox sync   --seed-stdin
@@ -173,9 +182,13 @@ resolves it in this order:
 4. a **hidden interactive prompt** — only on a TTY, when the secret is required
 5. otherwise, a clear error pointing at options 1–3
 
-The raw `--seed <hex>` / `--secret-key <hex>` flags still exist for throwaway/test
-values (e.g. inspecting a public test vector with `identity`) but are documented
-as **insecure** and should not carry a real key.
+On every path `--seed` accepts both seed representations — 64-digit raw hex or
+the checksummed `L309-SEED-1…` form; `--secret-key` is a raw X25519 key and is
+hex-only.
+
+The raw `--seed <value>` / `--secret-key <hex>` flags still exist for throwaway/
+test values (e.g. inspecting a public test vector with `identity`) but are
+documented as **insecure** and should not carry a real key.
 
 The moderately-sensitive API key may be stored in a gateway profile; that file is
 written with `0600` permissions and the key is masked in `list`/`show`.
@@ -214,7 +227,7 @@ Consistent across every command:
 | ------------------------------------------ | ------------------- | -------------------------------- |
 | `CARDANOWALL_BASE_URL`                     | `--base-url`        | service gateway base URL         |
 | `CARDANOWALL_API_KEY`                      | `--api-key`         | opaque bearer API key            |
-| `CARDANOWALL_SEED`                         | `--seed`            | 32-byte identity seed (hex)      |
+| `CARDANOWALL_SEED`                         | `--seed`            | seed (hex or `L309-SEED-1…`)     |
 | `CARDANOWALL_RECIPIENT_KEY`                | `--secret-key`      | X25519 recipient key(s)          |
 | `CARDANOWALL_CARDANO_GATEWAY`              | `--cardano-gateway` | Koios-compatible explorer URL(s) |
 | `CARDANOWALL_ARWEAVE_GATEWAY`              | `--arweave-gateway` | Arweave gateway URL(s)           |

@@ -6,17 +6,19 @@
 //! handlers call) plus the SDK primitives, so the cryptographic round-trips are
 //! exercised without any network or filesystem I/O.
 
+use std::collections::BTreeMap;
+
 use cardanowall::client::{assemble_cose_sign1, prepare_sig_structure, Signer};
 use cardanowall::merkle::{
     encode_leaves_list, merkle_inclusion_proof, merkle_root, verify_inclusion,
 };
 use cardanowall::poe_standard::{
-    encode_poe_record, validate_poe_record, EncryptionEnvelope, ItemEntry, PoeRecord, Slot,
-    ValidateResult,
+    encode_poe_record, validate_poe_record, EncScheme1, EncryptionEnvelope, ItemEntry, PoeRecord,
+    Slot, ValidateResult, ValidatorOptions,
 };
 use cardanowall::sealed_poe::{
-    chunk_kem_ct, ecies_sealed_poe_unwrap, ecies_sealed_poe_wrap_secure, SealedKem, SealedSlots,
-    UnwrapKeys, UnwrapResult, WrapArgs,
+    ecies_sealed_poe_unwrap, ecies_sealed_poe_wrap_secure, SealedKem, SealedSlots, UnwrapKeys,
+    UnwrapResult, WrapArgs,
 };
 use cardanowall::seed_derive::{
     derive_mlkem768x25519_keypair, derive_x25519_keypair, signer_from_seed,
@@ -137,7 +139,7 @@ fn sign_record_prepare_assemble_agree_and_validate() {
     signed.sigs = Some(vec![inline.sig_entry]);
     let cbor = encode_poe_record(&signed).unwrap();
     assert!(matches!(
-        validate_poe_record(&cbor),
+        validate_poe_record(&cbor, &ValidatorOptions::default()),
         ValidateResult::Ok { .. }
     ));
 }
@@ -146,13 +148,22 @@ fn sign_record_prepare_assemble_agree_and_validate() {
 // inbox decrypt with a raw seed
 // ---------------------------------------------------------------------------
 
+/// The item's content-hash map in the shape the sealed-PoE transcript binds.
+fn hashes_map(plaintext: &[u8]) -> BTreeMap<String, Vec<u8>> {
+    [("sha2-256".to_string(), sha256(plaintext).to_vec())].into()
+}
+
 /// Build a classical (x25519) sealed `ItemEntry` for a recipient seed, returning
-/// the on-chain item plus the off-chain ciphertext bytes.
+/// the on-chain item plus the off-chain ciphertext bytes. The item's content
+/// hashes are bound into the slots transcript at seal time, so the unwrap must
+/// be handed the same map.
 fn seal_to_seed(recipient_seed: &[u8; 32], plaintext: &[u8]) -> (ItemEntry, Vec<u8>) {
     let recipient = derive_x25519_keypair(recipient_seed).unwrap();
+    let hashes = hashes_map(plaintext);
     let sealed = ecies_sealed_poe_wrap_secure(WrapArgs {
         plaintext,
         recipient_public_keys: &[recipient.public_key.to_vec()],
+        hashes: &hashes,
         kem: Some(SealedKem::X25519),
         ..WrapArgs::default()
     })
@@ -170,30 +181,28 @@ fn seal_to_seed(recipient_seed: &[u8; 32], plaintext: &[u8]) -> (ItemEntry, Vec<
             .collect(),
         SealedSlots::Mlkem768X25519(_) => panic!("expected classical slots"),
     };
-    let enc = EncryptionEnvelope {
-        scheme: env.scheme as u64,
+    let enc = EncryptionEnvelope::Scheme1(EncScheme1 {
+        scheme: u64::try_from(env.scheme).expect("scheme is 1"),
         aead: env.aead.clone(),
         nonce: env.nonce.clone(),
         kem: Some(env.kem.clone()),
         slots: Some(slots),
         slots_mac: Some(env.slots_mac.clone()),
         passphrase: None,
-    };
+    });
     let item = ItemEntry {
-        hashes: vec![("sha2-256".to_string(), sha256(plaintext).to_vec())],
+        hashes: hashes.into_iter().collect(),
         // The CLI fetches ciphertext from these URIs; the test injects the bytes
         // directly, so the URI list is irrelevant to the crypto path.
-        uris: Some(vec![chunk_uri("ar://test")]),
+        uris: Some(vec!["ar://test".to_string()]),
         enc: Some(enc),
     };
     (item, sealed.ciphertext)
 }
 
-fn chunk_uri(uri: &str) -> Vec<String> {
-    uri.as_bytes()
-        .chunks(64)
-        .map(|c| String::from_utf8(c.to_vec()).unwrap())
-        .collect()
+/// The item's hash map exactly as committed on the wire.
+fn item_hashes(item: &ItemEntry) -> BTreeMap<String, Vec<u8>> {
+    item.hashes.iter().cloned().collect()
 }
 
 #[test]
@@ -212,8 +221,8 @@ fn inbox_decrypt_with_raw_seed_recovers_plaintext_and_validates_hash() {
     let unwrap = ecies_sealed_poe_unwrap(
         &envelope,
         &ciphertext,
+        &item_hashes(&item),
         UnwrapKeys::Bundle(&bundle),
-        true,
         None,
     )
     .unwrap();
@@ -241,8 +250,8 @@ fn inbox_decrypt_with_wrong_seed_does_not_match() {
     let unwrap = ecies_sealed_poe_unwrap(
         &envelope,
         &ciphertext,
+        &item_hashes(&item),
         UnwrapKeys::Bundle(&bundle),
-        true,
         None,
     )
     .unwrap();
@@ -257,9 +266,11 @@ fn inbox_decrypt_hybrid_record_needs_seed_not_secret_key() {
     let recipient_seed = [0x77u8; 32];
     let xwing = derive_mlkem768x25519_keypair(&recipient_seed).unwrap();
     let plaintext = b"hybrid sealed payload".to_vec();
+    let hashes = hashes_map(&plaintext);
     let sealed = ecies_sealed_poe_wrap_secure(WrapArgs {
         plaintext: &plaintext,
         recipient_public_keys: &[xwing.public_key.to_vec()],
+        hashes: &hashes,
         kem: Some(SealedKem::Mlkem768X25519),
         ..WrapArgs::default()
     })
@@ -270,6 +281,7 @@ fn inbox_decrypt_hybrid_record_needs_seed_not_secret_key() {
             .iter()
             .map(|s| Slot {
                 epk: None,
+                // The 1120-byte X-Wing ciphertext travels as a single byte string.
                 kem_ct: Some(s.kem_ct.clone()),
                 wrap: Some(s.wrap.clone()),
             })
@@ -277,17 +289,17 @@ fn inbox_decrypt_hybrid_record_needs_seed_not_secret_key() {
         SealedSlots::X25519(_) => panic!("expected hybrid slots"),
     };
     let item = ItemEntry {
-        hashes: vec![("sha2-256".to_string(), sha256(&plaintext).to_vec())],
-        uris: Some(vec![chunk_uri("ar://test")]),
-        enc: Some(EncryptionEnvelope {
-            scheme: env.scheme as u64,
+        hashes: hashes.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        uris: Some(vec!["ar://test".to_string()]),
+        enc: Some(EncryptionEnvelope::Scheme1(EncScheme1 {
+            scheme: u64::try_from(env.scheme).expect("scheme is 1"),
             aead: env.aead.clone(),
             nonce: env.nonce.clone(),
             kem: Some(env.kem.clone()),
             slots: Some(slots),
             slots_mac: Some(env.slots_mac.clone()),
             passphrase: None,
-        }),
+        })),
     };
     let envelope = envelope_from_item(&item).unwrap();
 
@@ -297,8 +309,8 @@ fn inbox_decrypt_hybrid_record_needs_seed_not_secret_key() {
     let opened = ecies_sealed_poe_unwrap(
         &envelope,
         &sealed.ciphertext,
+        &hashes,
         UnwrapKeys::Bundle(&seed_id.recipient_key_bundle()),
-        true,
         None,
     )
     .unwrap();
@@ -309,16 +321,12 @@ fn inbox_decrypt_hybrid_record_needs_seed_not_secret_key() {
     let non_match = ecies_sealed_poe_unwrap(
         &envelope,
         &sealed.ciphertext,
+        &hashes,
         UnwrapKeys::Bundle(&sk_id.recipient_key_bundle()),
-        true,
         None,
     )
     .unwrap();
     assert!(matches!(non_match, UnwrapResult::NotMatched { .. }));
-
-    // chunk_kem_ct is the exact wire split the slot uses; sanity-check it is
-    // non-empty so the hybrid slot is well-formed.
-    assert!(!chunk_kem_ct(&[1u8; 1120]).is_empty());
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

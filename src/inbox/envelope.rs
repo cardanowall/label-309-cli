@@ -1,14 +1,14 @@
 //! Project a validated record item's `enc` block onto the discriminated
 //! [`SealedEnvelope`] the unwrap / trial-decrypt path consumes.
 //!
-//! The structural validator yields a permissive [`EncryptionEnvelope`] whose
-//! per-slot fields are all optional (the schema layer cannot know the KEM from a
-//! slot in isolation). This bridges that to the sealed-PoE [`ParsedEnvelope`] and
-//! dispatches on `enc.kem`; it returns `None` for anything that is not a
-//! recognised sealed-recipient envelope (a passphrase-only block, a missing
-//! field, or an unknown KEM).
+//! The structural validator yields an [`EncryptionEnvelope`] whose typed
+//! scheme-1 arm keeps every per-slot field optional (the schema layer cannot
+//! know the KEM from a slot in isolation). This bridges that arm to the
+//! sealed-PoE [`ParsedEnvelope`] and dispatches on `enc.kem`; it returns `None`
+//! for anything that is not a recognised sealed-recipient envelope (an opaque
+//! envelope, a passphrase-only block, a missing field, or an unknown KEM).
 
-use cardanowall::poe_standard::{EncryptionEnvelope, ItemEntry};
+use cardanowall::poe_standard::{EncScheme1, EncryptionEnvelope, ItemEntry};
 use cardanowall::sealed_poe::{
     sealed_envelope_from_parsed, ParsedEnvelope, ParsedSlot, SealedEnvelope,
 };
@@ -17,13 +17,17 @@ use cardanowall::sealed_poe::{
 /// carries no trial-decryptable sealed-recipient envelope.
 #[must_use]
 pub fn envelope_from_item(item: &ItemEntry) -> Option<SealedEnvelope> {
-    let enc = item.enc.as_ref()?;
-    sealed_envelope_from_parsed(&parsed_from_encryption_envelope(enc))
+    let EncryptionEnvelope::Scheme1(enc) = item.enc.as_ref()? else {
+        // An opaque envelope (unsupported identifiers, preserved verbatim) has
+        // no recipient key path this implementation can attempt.
+        return None;
+    };
+    sealed_envelope_from_parsed(&parsed_from_scheme1(enc))
 }
 
-fn parsed_from_encryption_envelope(enc: &EncryptionEnvelope) -> ParsedEnvelope {
+fn parsed_from_scheme1(enc: &EncScheme1) -> ParsedEnvelope {
     ParsedEnvelope {
-        scheme: Some(enc.scheme as i64),
+        scheme: i64::try_from(enc.scheme).ok(),
         aead: Some(enc.aead.clone()),
         kem: enc.kem.clone(),
         nonce: Some(enc.nonce.clone()),

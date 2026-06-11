@@ -16,6 +16,7 @@ use cardanowall::seed_derive::{
     derive_ed25519_keypair, derive_mlkem768x25519_keypair, derive_x25519_keypair,
 };
 use clap::Args;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::secret::{resolve_secret_bytes, SecretArgs, SecretEnv, SecretKind};
 use crate::util::{hex_to_bytes, CliError};
@@ -24,8 +25,9 @@ use crate::util::{hex_to_bytes, CliError};
 /// family or the secret-key family, each with raw / `*-file` / `*-stdin` variants.
 #[derive(Debug, Args, Clone, Default)]
 pub struct IdentitySource {
-    /// 32-byte master identity seed (hex). INSECURE on argv (shell history / ps /
-    /// CI logs); prefer --seed-file / --seed-stdin / CARDANOWALL_SEED.
+    /// 32-byte master identity seed: 64-digit hex or the checksummed
+    /// L309-SEED-1... form. INSECURE on argv (shell history / ps / CI logs);
+    /// prefer --seed-file / --seed-stdin / CARDANOWALL_SEED.
     #[arg(long)]
     pub seed: Option<String>,
     /// read the seed from a file (trailing whitespace trimmed).
@@ -85,7 +87,6 @@ impl IdentitySource {
                 let bytes = resolve_secret_bytes(
                     SecretKind::Seed,
                     &self.seed_args(),
-                    32,
                     true,
                     cmd,
                     env,
@@ -97,7 +98,6 @@ impl IdentitySource {
                 let bytes = resolve_secret_bytes(
                     SecretKind::RecipientKey,
                     &self.secret_key_args(),
-                    32,
                     true,
                     cmd,
                     env,
@@ -113,8 +113,10 @@ impl IdentitySource {
     }
 }
 
-/// A resolved inbox identity.
-#[derive(Debug, Clone)]
+/// A resolved inbox identity. Holds live private-key material, so it wipes
+/// itself on drop and its `Debug` impl redacts every field (a derived debug
+/// print of this struct would be a key leak).
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct ResolvedIdentity {
     /// The raw X25519 private key (always present).
     pub x25519_private_key: Vec<u8>,
@@ -125,13 +127,40 @@ pub struct ResolvedIdentity {
     pub ed25519_public_key: Option<Vec<u8>>,
 }
 
-/// The identity input selection: exactly one of seed / secret-key.
-#[derive(Debug, Clone)]
+impl std::fmt::Debug for ResolvedIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedIdentity")
+            .field("x25519_private_key", &"<redacted>")
+            .field(
+                "mlkem768x25519_secret_seed",
+                &self
+                    .mlkem768x25519_secret_seed
+                    .as_ref()
+                    .map(|_| "<redacted>"),
+            )
+            .field("ed25519_public_key", &self.ed25519_public_key)
+            .finish()
+    }
+}
+
+/// The identity input selection: exactly one of seed / secret-key. Carries the
+/// secret as typed by the user, so it wipes on drop and its `Debug` impl
+/// redacts the value.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub enum IdentityInput {
     /// A 32-byte master identity seed (hex).
     Seed(String),
     /// A raw X25519 private key as 64-char lowercase hex.
     SecretKey(String),
+}
+
+impl std::fmt::Debug for IdentityInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IdentityInput::Seed(_) => f.write_str("IdentityInput::Seed(<redacted>)"),
+            IdentityInput::SecretKey(_) => f.write_str("IdentityInput::SecretKey(<redacted>)"),
+        }
+    }
 }
 
 impl ResolvedIdentity {
@@ -163,9 +192,11 @@ pub fn resolve_identity(
     cmd: &str,
 ) -> Result<ResolvedIdentity, CliError> {
     let input = pick_identity_input(seed, secret_key, cmd)?;
-    match input {
-        IdentityInput::Seed(hex) => resolve_from_seed_hex(&hex),
-        IdentityInput::SecretKey(hex) => resolve_from_secret_key_hex(&hex),
+    // Match by reference: `IdentityInput` zeroizes on drop, so the secret hex
+    // must stay inside it rather than being moved out into an unmanaged String.
+    match &input {
+        IdentityInput::Seed(hex) => resolve_from_seed_hex(hex),
+        IdentityInput::SecretKey(hex) => resolve_from_secret_key_hex(hex),
     }
 }
 
@@ -188,8 +219,9 @@ fn pick_identity_input(
 }
 
 fn resolve_from_seed_hex(seed_hex: &str) -> Result<ResolvedIdentity, CliError> {
-    let bytes =
-        hex_to_bytes(seed_hex).map_err(|e| CliError::input(format!("inbox: --seed {e}")))?;
+    let bytes = hex_to_bytes(seed_hex)
+        .map(Zeroizing::new)
+        .map_err(|e| CliError::input(format!("inbox: --seed {e}")))?;
     if bytes.len() != 32 {
         return Err(CliError::input(format!(
             "inbox: seed MUST be exactly 32 bytes, got {}",
@@ -200,18 +232,24 @@ fn resolve_from_seed_hex(seed_hex: &str) -> Result<ResolvedIdentity, CliError> {
 }
 
 /// Derive the full identity (Ed25519 + X25519 + X-Wing) from a 32-byte seed.
+/// The derived keypair locals are wiped once their needed halves are copied
+/// into the (self-zeroizing) `ResolvedIdentity`.
 fn resolve_from_seed_bytes(bytes: &[u8]) -> Result<ResolvedIdentity, CliError> {
-    let x25519 =
+    let mut x25519 =
         derive_x25519_keypair(bytes).map_err(|e| CliError::input(format!("inbox: --seed {e}")))?;
-    let ed25519 =
+    let mut ed25519 =
         derive_ed25519_keypair(bytes).map_err(|e| CliError::input(format!("inbox: --seed {e}")))?;
-    let xwing = derive_mlkem768x25519_keypair(bytes)
+    let mut xwing = derive_mlkem768x25519_keypair(bytes)
         .map_err(|e| CliError::input(format!("inbox: --seed {e}")))?;
-    Ok(ResolvedIdentity {
+    let resolved = ResolvedIdentity {
         x25519_private_key: x25519.secret_key.to_vec(),
         mlkem768x25519_secret_seed: Some(xwing.secret_seed.to_vec()),
         ed25519_public_key: Some(ed25519.public_key.to_vec()),
-    })
+    };
+    x25519.secret_key.zeroize();
+    ed25519.secret_key.zeroize();
+    xwing.secret_seed.zeroize();
+    Ok(resolved)
 }
 
 fn resolve_from_secret_key_hex(secret_key_hex: &str) -> Result<ResolvedIdentity, CliError> {
@@ -227,6 +265,7 @@ fn resolve_from_secret_key_hex(secret_key_hex: &str) -> Result<ResolvedIdentity,
         )));
     }
     let bytes = hex_to_bytes(secret_key_hex)
+        .map(Zeroizing::new)
         .map_err(|e| CliError::input(format!("inbox: --secret-key {e}")))?;
     resolve_from_secret_key_bytes(&bytes)
 }

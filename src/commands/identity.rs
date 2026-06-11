@@ -21,19 +21,20 @@ use cardanowall::seed_derive::{
 };
 use clap::Args;
 use serde::Serialize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::secret::{resolve_secret_bytes, SecretArgs, SecretEnv, SecretKind, SystemSecretEnv};
 use crate::util::{bytes_to_hex, CliError};
 
-const MASTER_SEED_BYTES: usize = 32;
 /// Chars of X-Wing hex shown at each end in the human view before the ellipsis.
 const XWING_HEX_ABBREV_HEAD: usize = 16;
 
 /// Arguments for `cardanowall identity`.
 #[derive(Debug, Args)]
 pub struct IdentityArgs {
-    /// 32-byte master identity seed (hex). INSECURE on argv (shell history / ps /
-    /// CI logs); prefer --seed-file / --seed-stdin / CARDANOWALL_SEED / the prompt.
+    /// 32-byte master identity seed: 64-digit hex or the checksummed
+    /// L309-SEED-1... form. INSECURE on argv (shell history / ps / CI logs);
+    /// prefer --seed-file / --seed-stdin / CARDANOWALL_SEED / the prompt.
     #[arg(long)]
     pub seed: Option<String>,
     /// read the seed from a file (trailing whitespace trimmed).
@@ -94,12 +95,17 @@ fn display_fingerprint(ed25519_public_key: &[u8]) -> String {
 /// Returns [`CliError`] (exit `4`) if the SDK rejects the seed length (should not
 /// happen — the caller pre-checks) or recipient encoding fails.
 pub fn build_identity_outcome(seed: &[u8]) -> Result<IdentityOutcome, CliError> {
-    let ed25519 =
+    // Only the public halves are read; the derived secret halves are local
+    // copies and are wiped before this function returns.
+    let mut ed25519 =
         derive_ed25519_keypair(seed).map_err(|e| CliError::input(format!("identity: {e}")))?;
-    let x25519 =
+    let mut x25519 =
         derive_x25519_keypair(seed).map_err(|e| CliError::input(format!("identity: {e}")))?;
-    let xwing = derive_mlkem768x25519_keypair(seed)
+    let mut xwing = derive_mlkem768x25519_keypair(seed)
         .map_err(|e| CliError::input(format!("identity: {e}")))?;
+    ed25519.secret_key.zeroize();
+    x25519.secret_key.zeroize();
+    xwing.secret_seed.zeroize();
 
     let age_recipient = encode_age_x25519_recipient(&x25519.public_key)
         .map_err(|e| CliError::input(format!("identity: {e}")))?;
@@ -119,16 +125,9 @@ pub fn build_identity_outcome(seed: &[u8]) -> Result<IdentityOutcome, CliError> 
 /// Resolve and length-check the master seed through the shared secret layer
 /// (file > stdin > argv > env > hidden prompt on a TTY > error). The seed is
 /// required for `identity`.
-fn resolve_seed(args: &IdentityArgs, env: &dyn SecretEnv) -> Result<Vec<u8>, CliError> {
-    resolve_secret_bytes(
-        SecretKind::Seed,
-        &args.secret_args(),
-        MASTER_SEED_BYTES,
-        true,
-        "identity",
-        env,
-    )
-    .map(|opt| opt.expect("a required seed resolves to Some or errors"))
+fn resolve_seed(args: &IdentityArgs, env: &dyn SecretEnv) -> Result<Zeroizing<Vec<u8>>, CliError> {
+    resolve_secret_bytes(SecretKind::Seed, &args.secret_args(), true, "identity", env)
+        .map(|opt| opt.expect("a required seed resolves to Some or errors"))
 }
 
 /// Abbreviate a long hex string for the human view, appending a byte count.
