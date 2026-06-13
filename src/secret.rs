@@ -4,13 +4,18 @@
 //!
 //! ## High-secrets (`--seed`, `--secret-key`)
 //!
-//! These decode to private key material. The resolution order is:
+//! These decode to private key material and must come from exactly ONE source.
+//! If more than one of file / stdin / raw argv / env supplies the same secret
+//! the resolver refuses with a CLI input error naming the conflicting sources,
+//! rather than silently picking one — a stale `--seed-file` quietly overriding
+//! an explicit `--seed` is a foot-gun that signs with the wrong key. With a
+//! single source the resolution order is:
 //!
 //! 1. `--<name>-file <path>`  — read the file, trim trailing whitespace.
 //! 2. `--<name>-stdin` (or the literal value `-`) — read all of stdin, trim the
 //!    trailing newline. Only one stdin reader may run per process.
-//! 3. the raw `--<name> <value>` argv flag — explicit, so it wins over env, but
-//!    it is the documented-INSECURE path (shell history / `ps` / CI logs).
+//! 3. the raw `--<name> <value>` argv flag — the documented-INSECURE path
+//!    (shell history / `ps` / CI logs); using it emits a one-line stderr warning.
 //! 4. the env var (`CARDANOWALL_SEED` / `CARDANOWALL_RECIPIENT_KEY`).
 //! 5. an interactive hidden prompt — ONLY when the secret is required AND stdin
 //!    is a TTY. The prompt text goes to stderr; the typed bytes never echo.
@@ -79,10 +84,14 @@ impl SecretKind {
 }
 
 /// The argv inputs for one high-secret, as collected by clap. The four sources
-/// are mutually-exclusive in practice but resolved by documented precedence here
-/// rather than rejected, so a power user mixing `--seed-file` with an env var
-/// still gets deterministic behaviour.
-#[derive(Debug, Clone, Default)]
+/// (file / stdin / raw argv / env) are mutually exclusive: supplying more than
+/// one is a hard CLI input error, so a stale flag can never silently shadow an
+/// explicit one.
+///
+/// `value` carries raw secret material (the seed / secret-key passed on argv),
+/// so `Debug` is hand-written to redact it: no `{:?}`, log, or panic-backtrace
+/// path can ever surface the value.
+#[derive(Clone, Default)]
 pub struct SecretArgs {
     /// `--<name> <hex>` — the raw, documented-insecure argv value.
     pub value: Option<String>,
@@ -90,6 +99,16 @@ pub struct SecretArgs {
     pub file: Option<String>,
     /// `--<name>-stdin` — read the secret from stdin.
     pub stdin: bool,
+}
+
+impl std::fmt::Debug for SecretArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretArgs")
+            .field("value", &self.value.as_ref().map(|_| "[redacted]"))
+            .field("file", &self.file)
+            .field("stdin", &self.stdin)
+            .finish()
+    }
 }
 
 impl SecretArgs {
@@ -115,6 +134,10 @@ pub trait SecretEnv {
     fn stdin_is_terminal(&self) -> bool;
     /// Prompt on stderr and read a line WITHOUT echo (the hidden prompt).
     fn prompt_hidden(&self, prompt: &str) -> Result<String, CliError>;
+    /// Emit a diagnostic line (the argv-insecurity warning) to stderr. Routed
+    /// through the env so tests can capture it instead of scraping the process's
+    /// real stderr; production writes the line verbatim.
+    fn warn(&self, message: &str);
 }
 
 /// The production secret environment: real env, real stdin, real `rpassword`.
@@ -148,12 +171,98 @@ impl SecretEnv for SystemSecretEnv {
         rpassword::prompt_password(prompt)
             .map_err(|e| CliError::input(format!("cannot read hidden prompt: {e}")))
     }
+
+    fn warn(&self, message: &str) {
+        eprintln!("{message}");
+    }
 }
 
 /// Trim a secret read from a file or stdin: drop a single trailing newline (and
 /// any other surrounding whitespace) so a `printf '%s\n' hex > seed` round-trips.
 fn trim_secret(raw: &str) -> String {
     raw.trim().to_string()
+}
+
+/// The stderr warning text for a secret passed as a raw argv flag. The value
+/// itself is never included — only the advice to use a safer source — because
+/// argv is captured by shell history, `ps`, and CI job logs. Built as a pure
+/// function so the no-secret-leak invariant is directly unit-testable.
+pub(crate) fn argv_secret_warning(kind: SecretKind) -> String {
+    format!(
+        "cardanowall: warning: passing --{flag} on the command line is insecure \
+         (visible in shell history, `ps`, and CI logs); prefer --{flag}-file, \
+         --{flag}-stdin, or the {env} environment variable",
+        flag = kind.flag(),
+        env = kind.env_var(),
+    )
+}
+
+/// Emit the argv-secret warning through the injected env's diagnostic sink.
+/// Public to the crate so command-level secret collectors that do not route
+/// through [`resolve_secret_string`] (e.g. `verify`'s repeatable `--secret-key`)
+/// share the exact same warning text and the same testable sink.
+pub(crate) fn warn_secret_on_argv(kind: SecretKind, env: &dyn SecretEnv) {
+    env.warn(&argv_secret_warning(kind));
+}
+
+/// The argv/env sources that may supply one high-secret, as boolean presence
+/// flags. Used to enforce the single-source rule from both the single-value
+/// resolver and the plural collectors (e.g. `verify`'s repeatable key list).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SecretSources {
+    /// `--<name>-file` is present and non-empty.
+    pub file: bool,
+    /// `--<name>-stdin` (or the `-` value sentinel) is present.
+    pub stdin: bool,
+    /// A raw `--<name>` argv value is present (the `-` sentinel does not count).
+    pub argv: bool,
+    /// The env var is set and non-empty.
+    pub env: bool,
+}
+
+impl SecretSources {
+    /// The named sources that are present, in the documented precedence order.
+    fn present(self, kind: SecretKind) -> Vec<String> {
+        let mut names = Vec::new();
+        if self.file {
+            names.push(format!("--{}-file", kind.flag()));
+        }
+        if self.stdin {
+            names.push(format!("--{}-stdin", kind.flag()));
+        }
+        if self.argv {
+            names.push(format!("--{}", kind.flag()));
+        }
+        if self.env {
+            names.push(kind.env_var().to_string());
+        }
+        names
+    }
+}
+
+/// Enforce that a high-secret comes from exactly one source. Resolving silently
+/// by precedence lets a stale `--seed-file` (or a leftover env var) override an
+/// explicit `--seed` the user thought they were using, signing with the wrong
+/// key without ever flagging the mismatch. When more than one source is present
+/// this returns a CLI input error naming them (never their values).
+///
+/// # Errors
+///
+/// Returns [`CliError`] (exit `4`) when two or more sources are present.
+pub(crate) fn enforce_single_secret_source(
+    kind: SecretKind,
+    sources: SecretSources,
+    cmd: &str,
+) -> Result<(), CliError> {
+    let names = sources.present(kind);
+    if names.len() > 1 {
+        return Err(CliError::input(format!(
+            "{cmd}: --{flag} given by more than one source ({sources}); supply it from exactly one",
+            flag = kind.flag(),
+            sources = names.join(", "),
+        )));
+    }
+    Ok(())
 }
 
 /// Resolve a high-secret to its raw 32 bytes.
@@ -196,17 +305,34 @@ fn resolve_secret_string(
     cmd: &str,
     env: &dyn SecretEnv,
 ) -> Result<Option<String>, CliError> {
+    let stdin_sentinel = args.value.as_deref() == Some("-");
+    let raw_argv_present = args.value.as_deref().is_some_and(|v| !v.is_empty()) && !stdin_sentinel;
+
+    // A high-secret must come from exactly one place; a stale source must never
+    // silently shadow an explicit one.
+    enforce_single_secret_source(
+        kind,
+        SecretSources {
+            file: args.file.as_deref().is_some_and(|p| !p.is_empty()),
+            stdin: args.stdin || stdin_sentinel,
+            argv: raw_argv_present,
+            env: env.var(kind.env_var()).is_some(),
+        },
+        cmd,
+    )?;
+
     // 1. file.
     if let Some(path) = args.file.as_deref().filter(|p| !p.is_empty()) {
         return Ok(Some(trim_secret(&env.read_file(path)?)));
     }
     // 2. stdin (explicit flag or the literal value `-`).
-    let stdin_sentinel = args.value.as_deref() == Some("-");
     if args.stdin || stdin_sentinel {
         return Ok(Some(trim_secret(&env.read_stdin()?)));
     }
-    // 3. raw argv value (explicit → beats env), excluding the `-` sentinel.
+    // 3. raw argv value (the documented-insecure path): warn before using it,
+    //    because it lands in shell history, `ps`, and CI logs.
     if let Some(value) = args.value.as_deref().filter(|v| !v.is_empty()) {
+        warn_secret_on_argv(kind, env);
         return Ok(Some(value.trim().to_string()));
     }
     // 4. env var.
@@ -258,7 +384,17 @@ fn decode_and_check(
                 seed.zeroize();
                 bytes
             })
-            .map_err(|e| CliError::input(format!("{cmd}: --{} {e}", kind.flag()))),
+            // The seed parser is an external boundary whose error Display can
+            // carry value-bearing detail. Never forward `{e}`: report only the
+            // input length and the parser's stable, value-free error code.
+            .map_err(|e| {
+                CliError::input(format!(
+                    "{cmd}: --{} invalid seed: {}-char value rejected ({})",
+                    kind.flag(),
+                    value.chars().count(),
+                    e.code(),
+                ))
+            }),
         SecretKind::RecipientKey => {
             let bytes = hex_to_bytes(value)
                 .map(Zeroizing::new)
@@ -298,12 +434,24 @@ pub fn resolve_config_value(
 }
 
 /// The resolved service-gateway endpoint: the base URL plus the opaque bearer.
-#[derive(Debug, Clone, Default)]
+///
+/// `api_key` is a bearer token, so `Debug` is hand-written to redact it: no
+/// `{:?}`, log, or panic-backtrace path can ever surface the key.
+#[derive(Clone, Default)]
 pub struct ServiceGateway {
     /// The required base URL.
     pub base_url: String,
     /// The opaque bearer API key, when supplied anywhere.
     pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for ServiceGateway {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServiceGateway")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 /// Resolve the service-gateway base URL + API key for a network command, applying
@@ -372,6 +520,9 @@ pub mod test_support {
         pub prompt_response: Option<String>,
         /// Records whether the prompt branch was hit.
         pub prompted: RefCell<bool>,
+        /// Captures every diagnostic line passed to `warn`, so tests can assert
+        /// the argv-insecurity warning fires (and only on the argv branch).
+        pub warnings: RefCell<Vec<String>>,
     }
 
     impl Default for FakeSecretEnv {
@@ -383,6 +534,7 @@ pub mod test_support {
                 terminal: false,
                 prompt_response: None,
                 prompted: RefCell::new(false),
+                warnings: RefCell::new(Vec::new()),
             }
         }
     }
@@ -411,6 +563,9 @@ pub mod test_support {
                 .clone()
                 .ok_or_else(|| CliError::input("no prompt response in fake".to_string()))
         }
+        fn warn(&self, message: &str) {
+            self.warnings.borrow_mut().push(message.to_string());
+        }
     }
 }
 
@@ -425,17 +580,14 @@ mod tests {
     }
 
     #[test]
-    fn file_beats_stdin_env_value() {
+    fn file_only_resolves() {
         let env = FakeEnv {
             files: HashMap::from([("/s".to_string(), format!("{}\n", seed_hex()))]),
-            stdin: Some("cd".repeat(32)),
-            vars: HashMap::from([("CARDANOWALL_SEED".to_string(), "ef".repeat(32))]),
             ..FakeEnv::default()
         };
         let args = SecretArgs {
-            value: Some("12".repeat(32)),
             file: Some("/s".to_string()),
-            stdin: true,
+            ..SecretArgs::default()
         };
         let bytes = resolve_secret_bytes(SecretKind::Seed, &args, true, "identity", &env)
             .unwrap()
@@ -444,10 +596,9 @@ mod tests {
     }
 
     #[test]
-    fn stdin_beats_env_and_trims_newline() {
+    fn stdin_only_resolves_and_trims_newline() {
         let env = FakeEnv {
             stdin: Some(format!("{}\n", seed_hex())),
-            vars: HashMap::from([("CARDANOWALL_SEED".to_string(), "ef".repeat(32))]),
             ..FakeEnv::default()
         };
         let args = SecretArgs {
@@ -477,11 +628,11 @@ mod tests {
     }
 
     #[test]
-    fn argv_value_beats_env() {
-        let env = FakeEnv {
-            vars: HashMap::from([("CARDANOWALL_SEED".to_string(), "ef".repeat(32))]),
-            ..FakeEnv::default()
-        };
+    fn argv_value_resolves_and_emits_the_insecurity_warning() {
+        // The sole-source argv path resolves AND emits the insecurity warning to
+        // the captured sink. The captured line must carry the advice but never
+        // the secret value itself.
+        let env = FakeEnv::default();
         let args = SecretArgs {
             value: Some(seed_hex()),
             ..SecretArgs::default()
@@ -490,6 +641,228 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(*bytes, hex_to_bytes(&seed_hex()).unwrap());
+
+        let warnings = env.warnings.borrow();
+        assert_eq!(warnings.len(), 1, "exactly one warning on the argv branch");
+        let warning = &warnings[0];
+        assert!(warning.contains("insecure"));
+        assert!(warning.contains("--seed"));
+        assert!(warning.contains("--seed-file"));
+        assert!(warning.contains("CARDANOWALL_SEED"));
+        assert!(!warning.contains(&seed_hex()));
+    }
+
+    #[test]
+    fn argv_warning_names_the_safe_alternatives_per_kind() {
+        let seed = argv_secret_warning(SecretKind::Seed);
+        assert!(seed.contains("--seed"));
+        assert!(seed.contains("--seed-file"));
+        assert!(seed.contains("--seed-stdin"));
+        assert!(seed.contains("CARDANOWALL_SEED"));
+        assert!(seed.contains("insecure"));
+
+        let key = argv_secret_warning(SecretKind::RecipientKey);
+        assert!(key.contains("--secret-key"));
+        assert!(key.contains("--secret-key-file"));
+        assert!(key.contains("--secret-key-stdin"));
+        assert!(key.contains("CARDANOWALL_RECIPIENT_KEY"));
+    }
+
+    #[test]
+    fn argv_warning_never_carries_secret_material() {
+        // The warning is built without the value, so even a real-looking secret
+        // cannot reach it (the function never receives the value at all).
+        let warning = argv_secret_warning(SecretKind::Seed);
+        assert!(!warning.contains(&seed_hex()));
+        assert!(!warning.contains(&"ef".repeat(32)));
+    }
+
+    /// Only the raw argv branch warns; file / stdin / env / prompt are silent.
+    /// There is no value exposed on argv on those paths, so the warning must stay
+    /// scoped to the branch that actually leaks the secret on the command line.
+    #[test]
+    fn non_argv_sources_never_warn() {
+        // File source.
+        let file_env = FakeEnv {
+            files: HashMap::from([("/s".to_string(), format!("{}\n", seed_hex()))]),
+            ..FakeEnv::default()
+        };
+        let file_args = SecretArgs {
+            file: Some("/s".to_string()),
+            ..SecretArgs::default()
+        };
+        resolve_secret_bytes(SecretKind::Seed, &file_args, true, "identity", &file_env).unwrap();
+        assert!(file_env.warnings.borrow().is_empty(), "file path is silent");
+
+        // Stdin source.
+        let stdin_env = FakeEnv {
+            stdin: Some(format!("{}\n", seed_hex())),
+            ..FakeEnv::default()
+        };
+        let stdin_args = SecretArgs {
+            stdin: true,
+            ..SecretArgs::default()
+        };
+        resolve_secret_bytes(SecretKind::Seed, &stdin_args, true, "identity", &stdin_env).unwrap();
+        assert!(
+            stdin_env.warnings.borrow().is_empty(),
+            "stdin path is silent"
+        );
+
+        // Env source.
+        let env_env = FakeEnv {
+            vars: HashMap::from([("CARDANOWALL_SEED".to_string(), seed_hex())]),
+            ..FakeEnv::default()
+        };
+        resolve_secret_bytes(
+            SecretKind::Seed,
+            &SecretArgs::default(),
+            true,
+            "identity",
+            &env_env,
+        )
+        .unwrap();
+        assert!(env_env.warnings.borrow().is_empty(), "env path is silent");
+
+        // Interactive prompt source (TTY).
+        let prompt_env = FakeEnv {
+            terminal: true,
+            prompt_response: Some(format!("{}\n", seed_hex())),
+            ..FakeEnv::default()
+        };
+        resolve_secret_bytes(
+            SecretKind::Seed,
+            &SecretArgs::default(),
+            true,
+            "identity",
+            &prompt_env,
+        )
+        .unwrap();
+        assert!(
+            prompt_env.warnings.borrow().is_empty(),
+            "prompt path is silent"
+        );
+    }
+
+    #[test]
+    fn multiple_sources_are_a_conflict_error() {
+        // file + stdin + argv + env all present: the resolver must refuse rather
+        // than silently let one shadow the others (a stale source signing with
+        // the wrong key).
+        let env = FakeEnv {
+            files: HashMap::from([("/s".to_string(), format!("{}\n", seed_hex()))]),
+            stdin: Some("cd".repeat(32)),
+            vars: HashMap::from([("CARDANOWALL_SEED".to_string(), "ef".repeat(32))]),
+            ..FakeEnv::default()
+        };
+        let args = SecretArgs {
+            value: Some("12".repeat(32)),
+            file: Some("/s".to_string()),
+            stdin: true,
+        };
+        let err =
+            resolve_secret_string(SecretKind::Seed, &args, true, "identity", &env).unwrap_err();
+        assert_eq!(err.code, 4);
+        // The message names the conflicting sources, never the secret values.
+        assert!(err.message.contains("--seed-file"));
+        assert!(err.message.contains("--seed-stdin"));
+        assert!(err.message.contains("--seed"));
+        assert!(err.message.contains("CARDANOWALL_SEED"));
+        assert!(!err.message.contains(&seed_hex()));
+        assert!(!err.message.contains(&"12".repeat(32)));
+        assert!(!err.message.contains(&"cd".repeat(32)));
+        assert!(!err.message.contains(&"ef".repeat(32)));
+    }
+
+    #[test]
+    fn argv_plus_env_is_a_conflict_error() {
+        // Two sources is enough to trip the conflict guard, even when one is the
+        // env var the argv flag used to silently beat.
+        let env = FakeEnv {
+            vars: HashMap::from([("CARDANOWALL_SEED".to_string(), "ef".repeat(32))]),
+            ..FakeEnv::default()
+        };
+        let args = SecretArgs {
+            value: Some(seed_hex()),
+            ..SecretArgs::default()
+        };
+        let err =
+            resolve_secret_string(SecretKind::Seed, &args, true, "identity", &env).unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(err.message.contains("--seed"));
+        assert!(err.message.contains("CARDANOWALL_SEED"));
+    }
+
+    #[test]
+    fn dash_stdin_plus_env_is_a_conflict_error() {
+        // The `-` stdin sentinel counts as the stdin source, so combining it with
+        // an env var is still a conflict.
+        let env = FakeEnv {
+            stdin: Some(seed_hex()),
+            vars: HashMap::from([("CARDANOWALL_SEED".to_string(), "ef".repeat(32))]),
+            ..FakeEnv::default()
+        };
+        let args = SecretArgs {
+            value: Some("-".to_string()),
+            ..SecretArgs::default()
+        };
+        let err =
+            resolve_secret_string(SecretKind::Seed, &args, true, "identity", &env).unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(err.message.contains("--seed-stdin"));
+        assert!(err.message.contains("CARDANOWALL_SEED"));
+    }
+
+    #[test]
+    fn secret_args_debug_redacts_the_argv_value() {
+        // A `{:?}` of SecretArgs (e.g. through a log line or a panic backtrace)
+        // must never surface the raw secret value; the file path and stdin flag
+        // are not secret and stay visible for debugging.
+        let args = SecretArgs {
+            value: Some(seed_hex()),
+            file: Some("/path/to/seed".to_string()),
+            stdin: false,
+        };
+        let rendered = format!("{args:?}");
+        assert!(!rendered.contains(&seed_hex()));
+        assert!(rendered.contains("[redacted]"));
+        assert!(rendered.contains("/path/to/seed"));
+    }
+
+    #[test]
+    fn enforce_single_secret_source_counts_sources() {
+        // One source is fine.
+        assert!(enforce_single_secret_source(
+            SecretKind::Seed,
+            SecretSources {
+                file: true,
+                ..SecretSources::default()
+            },
+            "identity",
+        )
+        .is_ok());
+        // None is fine here (absence is handled downstream by `required`).
+        assert!(enforce_single_secret_source(
+            SecretKind::Seed,
+            SecretSources::default(),
+            "identity",
+        )
+        .is_ok());
+        // Two or more is a hard error naming the sources.
+        let err = enforce_single_secret_source(
+            SecretKind::RecipientKey,
+            SecretSources {
+                argv: true,
+                file: true,
+                ..SecretSources::default()
+            },
+            "verify",
+        )
+        .unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(err.message.contains("--secret-key"));
+        assert!(err.message.contains("--secret-key-file"));
+        assert!(err.message.contains("more than one source"));
     }
 
     #[test]
@@ -624,6 +997,8 @@ mod tests {
         let mut corrupted = zero_seed_encoded().to_ascii_lowercase();
         let last = corrupted.pop().expect("encoded seed is non-empty");
         corrupted.push(if last == 'q' { 'p' } else { 'q' });
+        // Keep the planted value so we can prove the boundary never echoes it.
+        let planted = corrupted.clone();
         let env = FakeEnv {
             vars: HashMap::from([("CARDANOWALL_SEED".to_string(), corrupted)]),
             ..FakeEnv::default()
@@ -637,6 +1012,39 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.code, 4);
+        // The corrupted seed value must NOT appear in the error string — the
+        // boundary reports only length + the parser's value-free error code.
+        assert!(
+            !err.message.contains(&planted),
+            "error must not echo the corrupted seed value"
+        );
+        // Neither may a long verbatim run of it leak (guard against partial echo).
+        assert!(!err.message.contains(&planted[..planted.len() - 4]));
+    }
+
+    #[test]
+    fn seed_malformed_hex_does_not_echo_value() {
+        // A 64-char seed-shaped hex with a stray non-hex digit must reject via the
+        // boundary without echoing the value — only length + error code.
+        let mut planted = "ab".repeat(31);
+        planted.push_str("az"); // 64 chars, invalid byte
+        let env = FakeEnv {
+            vars: HashMap::from([("CARDANOWALL_SEED".to_string(), planted.clone())]),
+            ..FakeEnv::default()
+        };
+        let err = resolve_secret_bytes(
+            SecretKind::Seed,
+            &SecretArgs::default(),
+            true,
+            "identity",
+            &env,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(!err.message.contains(&planted));
+        assert!(!err.message.contains(&"ab".repeat(31)));
+        // It DOES report the length so the user can still self-diagnose.
+        assert!(err.message.contains("64-char"));
     }
 
     #[test]

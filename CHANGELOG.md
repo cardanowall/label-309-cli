@@ -9,6 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > Pre-1.0 versions do not carry the stability guarantees of
 > [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-06-13
+
+### Security
+
+- Secret material (seeds, secret keys, passphrases) never appears in error messages, warnings, or `Debug` output: a failure reports only a length or byte offset, and supplying a secret through more than one source is now a hard error instead of a silent precedence choice.
+
 ## [0.5.0] - 2026-06-12
 
 ### Changed

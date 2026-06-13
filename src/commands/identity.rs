@@ -30,7 +30,11 @@ use crate::util::{bytes_to_hex, CliError};
 const XWING_HEX_ABBREV_HEAD: usize = 16;
 
 /// Arguments for `cardanowall identity`.
-#[derive(Debug, Args)]
+///
+/// `seed` carries raw secret material passed on argv, so `Debug` is hand-written
+/// to redact it: no `{:?}`, log, or panic-backtrace path can ever surface the
+/// value.
+#[derive(Args)]
 pub struct IdentityArgs {
     /// 32-byte master identity seed: 64-digit hex or the checksummed
     /// L309-SEED-1... form. INSECURE on argv (shell history / ps / CI logs);
@@ -46,6 +50,17 @@ pub struct IdentityArgs {
     /// Emit a machine-readable JSON summary on stdout.
     #[arg(long)]
     pub json: bool,
+}
+
+impl std::fmt::Debug for IdentityArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdentityArgs")
+            .field("seed", &self.seed.as_ref().map(|_| "[redacted]"))
+            .field("seed_file", &self.seed_file)
+            .field("seed_stdin", &self.seed_stdin)
+            .field("json", &self.json)
+            .finish()
+    }
 }
 
 impl IdentityArgs {
@@ -235,5 +250,16 @@ mod tests {
         // xxxx-xxxx-xxxx-xxxx → 16 hex + 3 dashes.
         assert_eq!(outcome.fingerprint.len(), 19);
         assert_eq!(outcome.fingerprint.matches('-').count(), 3);
+    }
+
+    #[test]
+    fn identity_args_debug_redacts_seed() {
+        let mut args = args_with_seed(Some(&"ab".repeat(32)));
+        args.seed_file = Some("/path/to/seed".to_string());
+        let rendered = format!("{args:?}");
+        assert!(!rendered.contains(&"ab".repeat(32)));
+        assert!(rendered.contains("[redacted]"));
+        // The file path is not secret and stays visible for debugging.
+        assert!(rendered.contains("/path/to/seed"));
     }
 }

@@ -45,7 +45,11 @@ impl StringOrList {
 /// This is NOT a login — the gateway API is key-only — so the profile just pairs
 /// an endpoint with the bearer the user forwards to it. Persisted under
 /// `[gateways.<name>]` in `config.toml`.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+///
+/// `api_key` is a bearer token, so `Debug` is hand-written to redact it (serde
+/// still round-trips the real key to/from disk, which is the intended store);
+/// no `{:?}`, log, or assert-failure path can surface the key.
+#[derive(Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct GatewayProfile {
     /// The service-gateway base URL (e.g. `https://gateway.example.com`).
     pub base_url: String,
@@ -54,9 +58,24 @@ pub struct GatewayProfile {
     pub api_key: Option<String>,
 }
 
+impl std::fmt::Debug for GatewayProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GatewayProfile")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
+}
+
 /// The parsed `config.toml` shape. Every field is optional; the gateway resolver
 /// applies precedence and defaults.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+///
+/// `blockfrost_project_id` is a Blockfrost API credential and `gateways` carries
+/// bearer tokens; `Debug` is hand-written to redact the project id (each profile
+/// redacts its own key) so no `{:?}`, log, or assert-failure path surfaces a
+/// credential. Serde still round-trips the real values to/from disk, the
+/// intended store.
+#[derive(Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CardanoWallConfig {
     /// Cardano gateway URL(s) (Koios-compatible).
@@ -84,6 +103,28 @@ pub struct CardanoWallConfig {
     /// the on-disk order is stable (deterministic round-trips).
     #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub gateways: BTreeMap<String, GatewayProfile>,
+}
+
+impl std::fmt::Debug for CardanoWallConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CardanoWallConfig")
+            .field("cardano_gateway", &self.cardano_gateway)
+            .field(
+                "blockfrost_project_id",
+                &self.blockfrost_project_id.as_ref().map(|_| "[redacted]"),
+            )
+            .field("arweave_gateway", &self.arweave_gateway)
+            .field("ipfs_gateway", &self.ipfs_gateway)
+            .field(
+                "confirmation_depth_threshold",
+                &self.confirmation_depth_threshold,
+            )
+            .field("deny_host", &self.deny_host)
+            .field("default_gateway", &self.default_gateway)
+            // Each profile redacts its own api_key via GatewayProfile::Debug.
+            .field("gateways", &self.gateways)
+            .finish()
+    }
 }
 
 impl CardanoWallConfig {
@@ -231,11 +272,40 @@ pub fn parse_config_str(
     // restricted to known keys.
     let filtered = filter_known_keys(raw);
     toml::from_str(&filtered).map_err(|e| {
+        // The config carries credentials (api_key, blockfrost_project_id). The
+        // toml error's Display — and its message() — echo the offending value and
+        // the surrounding source line verbatim, so neither may reach the user.
+        // Report only the location, derived from the error's structured span
+        // against the (filtered) source, never any value-bearing text.
         CliError::input(format!(
-            "config: TOML parse failed at {}: {e}",
-            path.display()
+            "config: TOML parse failed at {} ({})",
+            path.display(),
+            sanitized_toml_location(&e, &filtered),
         ))
     })
+}
+
+/// Describe a toml deserialize error by LOCATION ONLY — never its message or
+/// Display, both of which echo the offending value and source line verbatim
+/// (a credential leak for a config carrying api_key / blockfrost_project_id).
+///
+/// The location is computed from the error's structured byte span against the
+/// source, counting newlines and characters in the prefix before the span start;
+/// the offending bytes themselves are never read.
+fn sanitized_toml_location(error: &toml::de::Error, source: &str) -> String {
+    match error.span() {
+        Some(span) => {
+            let start = span.start.min(source.len());
+            let prefix = &source[..start];
+            let line = prefix.matches('\n').count() + 1;
+            let col = prefix
+                .rsplit('\n')
+                .next()
+                .map_or(1, |last_line| last_line.chars().count() + 1);
+            format!("line {line}, column {col}")
+        }
+        None => "location unavailable".to_string(),
+    }
 }
 
 const KNOWN_KEYS: [&str; 8] = [
@@ -370,6 +440,66 @@ mod tests {
     }
 
     #[test]
+    fn malformed_toml_error_never_echoes_planted_credentials() {
+        // A type error: confirmation_depth_threshold is an integer field, so a
+        // string value triggers the strict-parse deserialize error whose raw
+        // Display would echo the offending value verbatim. Plant a recognizable
+        // secret-shaped value and a credential line, then prove neither reaches
+        // the sanitized error (location-only).
+        const PLANTED_THRESHOLD: &str = "SECRETthresholdVALUE";
+        const PLANTED_BLOCKFROST: &str = "mainnetSECRETprojectid";
+        let raw = format!(
+            "blockfrost_project_id = \"{PLANTED_BLOCKFROST}\"\n\
+             confirmation_depth_threshold = \"{PLANTED_THRESHOLD}\"\n"
+        );
+        let env = env_with(
+            &[("/leak.toml", raw.as_str())],
+            &[("CARDANOWALL_CONFIG_PATH", "/leak.toml")],
+        );
+        let err = read_config_file(&env).unwrap_err();
+        assert_eq!(err.code, 4);
+        // Neither planted credential may appear in the error message.
+        assert!(
+            !err.message.contains(PLANTED_THRESHOLD),
+            "error leaked the planted threshold value: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains(PLANTED_BLOCKFROST),
+            "error leaked the planted blockfrost credential: {}",
+            err.message
+        );
+        // It still reports a usable location so the user can self-diagnose.
+        assert!(err.message.contains("line"));
+        assert!(err.message.contains("column"));
+    }
+
+    #[test]
+    fn syntax_error_on_credential_line_never_echoes_it() {
+        // A pure syntax error (unterminated string) whose source-line snippet the
+        // toml Display would print verbatim — including the credential on that
+        // line. The sanitized boundary reports location only.
+        const PLANTED_KEY: &str = "superSECRETbearerTOKEN";
+        let raw = format!(
+            "[gateways.prod]\n\
+             base_url = \"https://gw.example\"\n\
+             api_key = \"{PLANTED_KEY}\n"
+        );
+        let env = env_with(
+            &[("/syntax.toml", raw.as_str())],
+            &[("CARDANOWALL_CONFIG_PATH", "/syntax.toml")],
+        );
+        let err = read_config_file(&env).unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(
+            !err.message.contains(PLANTED_KEY),
+            "error leaked the planted api_key: {}",
+            err.message
+        );
+        assert!(err.message.contains("line"));
+    }
+
+    #[test]
     fn unknown_key_warns_but_parses() {
         let env = env_with(
             &[(
@@ -385,5 +515,39 @@ mod tests {
             .borrow()
             .iter()
             .any(|w| w.contains("unknown_key")));
+    }
+
+    #[test]
+    fn gateway_profile_debug_redacts_api_key() {
+        let profile = GatewayProfile {
+            base_url: "https://gw.example".to_string(),
+            api_key: Some("super-secret-bearer".to_string()),
+        };
+        let rendered = format!("{profile:?}");
+        assert!(!rendered.contains("super-secret-bearer"));
+        assert!(rendered.contains("[redacted]"));
+        assert!(rendered.contains("https://gw.example"));
+    }
+
+    #[test]
+    fn config_debug_redacts_blockfrost_and_profile_keys() {
+        let mut config = CardanoWallConfig {
+            blockfrost_project_id: Some("mainnetSECRETprojectid".to_string()),
+            ..CardanoWallConfig::default()
+        };
+        config.gateways.insert(
+            "prod".to_string(),
+            GatewayProfile {
+                base_url: "https://gw.example".to_string(),
+                api_key: Some("super-secret-bearer".to_string()),
+            },
+        );
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("mainnetSECRETprojectid"));
+        assert!(!rendered.contains("super-secret-bearer"));
+        assert!(rendered.contains("[redacted]"));
+        // Non-secret fields stay visible.
+        assert!(rendered.contains("https://gw.example"));
+        assert!(rendered.contains("prod"));
     }
 }

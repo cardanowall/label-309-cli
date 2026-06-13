@@ -110,11 +110,15 @@ struct VerifyOutcome {
 }
 
 fn ensure_hex32(hex: &str, label: &str) -> Result<Vec<u8>, CliError> {
-    let bytes = hex_to_bytes(hex).map_err(|e| {
-        CliError::integrity(format!("merkle verify: {label} is not valid hex: {e}"))
-    })?;
+    // Malformed hex is a CLI-input failure (exit 4), not an integrity verdict:
+    // the value never reached the proof-reconstruction check. Exit 1 stays
+    // reserved for a well-formed proof that does NOT verify. The forwarded hex
+    // error is the sanitized internal decoder's — it reports length/offset only,
+    // never the input value.
+    let bytes = hex_to_bytes(hex)
+        .map_err(|e| CliError::input(format!("merkle verify: {label} is not valid hex: {e}")))?;
     if bytes.len() != DIGEST_BYTES {
-        return Err(CliError::integrity(format!(
+        return Err(CliError::input(format!(
             "merkle verify: {label} must decode to exactly {DIGEST_BYTES} bytes; got {}",
             bytes.len()
         )));
@@ -123,9 +127,10 @@ fn ensure_hex32(hex: &str, label: &str) -> Result<Vec<u8>, CliError> {
 }
 
 fn ensure_uint(n: Option<i64>, label: &str) -> Result<usize, CliError> {
+    // A malformed integer is malformed input (exit 4), the same class as bad hex.
     match n {
         Some(v) if v >= 0 => Ok(v as usize),
-        _ => Err(CliError::integrity(format!(
+        _ => Err(CliError::input(format!(
             "merkle verify: {label} must be a non-negative integer"
         ))),
     }
@@ -134,14 +139,19 @@ fn ensure_uint(n: Option<i64>, label: &str) -> Result<usize, CliError> {
 fn run_verify(args: MerkleVerifyArgs) -> Result<(), CliError> {
     let root_bytes = ensure_hex32(&args.root, "--root")?;
 
+    // An unreadable proof file is an IO failure (network class, exit 2), the same
+    // class used for every other unreadable file in the CLI — not an integrity
+    // verdict on a record.
     let file_text = std::fs::read_to_string(&args.proof).map_err(|e| {
-        CliError::integrity(format!(
+        CliError::network(format!(
             "merkle verify: cannot read --proof file {}: {e}",
             args.proof
         ))
     })?;
+    // A proof file that is present but not valid JSON is unparseable input, also
+    // the network class per the exit-code taxonomy (IO / unparseable content).
     let file: ProofFile = serde_json::from_str(&file_text).map_err(|e| {
-        CliError::integrity(format!(
+        CliError::network(format!(
             "merkle verify: proof file {} is not valid JSON: {e}",
             args.proof
         ))
@@ -379,5 +389,70 @@ mod tests {
     fn empty_leaves_input_is_error() {
         let err = leaves_from_digest_lines("# comment only\n\n", "<test>").unwrap_err();
         assert_eq!(err.code, 4);
+    }
+
+    #[test]
+    fn malformed_hex_is_input_error_and_does_not_echo_value() {
+        // Malformed --root/--leaf/proof hex is CLI-input class (exit 4), not an
+        // integrity verdict, and the sanitized decoder never echoes the value.
+        let planted = format!("{}zz", "ab".repeat(31)); // 64 chars, invalid bytes
+        let err = ensure_hex32(&planted, "--root").unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(!err.message.contains(&planted));
+        assert!(!err.message.contains(&"ab".repeat(31)));
+
+        // A wrong-length (but valid-hex) value is also input-class.
+        let short = ensure_hex32("abcd", "--leaf").unwrap_err();
+        assert_eq!(short.code, 4);
+    }
+
+    #[test]
+    fn malformed_uint_is_input_error() {
+        assert_eq!(ensure_uint(Some(-1), "index").unwrap_err().code, 4);
+        assert_eq!(ensure_uint(None, "tree_size").unwrap_err().code, 4);
+        assert_eq!(ensure_uint(Some(3), "index").unwrap(), 3);
+    }
+
+    #[test]
+    fn unreadable_proof_file_is_network_error() {
+        // An unreadable --proof file is the IO/network class (exit 2).
+        let args = MerkleVerifyArgs {
+            root: "ab".repeat(32),
+            leaf: None,
+            proof: "/nonexistent/merkle-proof-does-not-exist.json".to_string(),
+            json: false,
+        };
+        let err = run_verify(args).unwrap_err();
+        assert_eq!(err.code, 2);
+    }
+
+    #[test]
+    fn invalid_json_proof_file_is_network_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proof.json");
+        std::fs::write(&path, "this is not json").unwrap();
+        let args = MerkleVerifyArgs {
+            root: "ab".repeat(32),
+            leaf: None,
+            proof: path.to_string_lossy().into_owned(),
+            json: false,
+        };
+        let err = run_verify(args).unwrap_err();
+        assert_eq!(err.code, 2);
+    }
+
+    #[test]
+    fn malformed_root_hex_via_run_verify_is_input_error() {
+        // Even reached through run_verify, a bad --root is input-class (exit 4),
+        // and it is checked before the (here absent) proof file is opened.
+        let args = MerkleVerifyArgs {
+            root: "not-valid-hex".to_string(),
+            leaf: None,
+            proof: "/unused.json".to_string(),
+            json: false,
+        };
+        let err = run_verify(args).unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(!err.message.contains("not-valid-hex"));
     }
 }

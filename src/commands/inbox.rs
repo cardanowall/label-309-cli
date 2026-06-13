@@ -157,7 +157,10 @@ fn relabel(err: CliError, cmd: &str) -> CliError {
 // ===========================================================================
 
 /// Arguments for `cardanowall inbox sync`.
-#[derive(Debug, Args)]
+/// `api_key` is a bearer token and the flattened `identity` carries secret
+/// material; `Debug` is hand-written to redact the key (the identity redacts
+/// itself) so no `{:?}`, log, or panic path can surface either.
+#[derive(Args)]
 pub struct InboxSyncArgs {
     /// target Label 309 gateway base URL (or env CARDANOWALL_BASE_URL, or a profile).
     #[arg(long = "base-url")]
@@ -180,6 +183,20 @@ pub struct InboxSyncArgs {
     /// pretty-print --json output.
     #[arg(long)]
     pub pretty: bool,
+}
+
+impl std::fmt::Debug for InboxSyncArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InboxSyncArgs")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
+            .field("gateway_profile", &self.gateway_profile)
+            .field("threshold", &self.threshold)
+            .field("identity", &self.identity)
+            .field("json", &self.json)
+            .field("pretty", &self.pretty)
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -381,7 +398,11 @@ fn run_sync(args: InboxSyncArgs) -> Result<(), CliError> {
 // ===========================================================================
 
 /// Arguments for `cardanowall inbox list`.
-#[derive(Debug, Args)]
+/// `blockfrost` is a Blockfrost project id (an API credential) and the flattened
+/// `identity` carries secret material; `Debug` is hand-written to redact the
+/// project id (the identity redacts itself) so no `{:?}`, log, or panic path can
+/// surface either.
+#[derive(Args)]
 pub struct InboxListArgs {
     /// Cardano gateway URL (optional; refreshes num_confirmations).
     #[arg(long = "cardano-gateway", visible_alias = "gateway")]
@@ -401,6 +422,22 @@ pub struct InboxListArgs {
     /// pretty-print JSON output.
     #[arg(long)]
     pub pretty: bool,
+}
+
+impl std::fmt::Debug for InboxListArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InboxListArgs")
+            .field("gateway", &self.gateway)
+            .field(
+                "blockfrost",
+                &self.blockfrost.as_ref().map(|_| "[redacted]"),
+            )
+            .field("deny_host", &self.deny_host)
+            .field("identity", &self.identity)
+            .field("json", &self.json)
+            .field("pretty", &self.pretty)
+            .finish()
+    }
 }
 
 fn run_list(args: InboxListArgs) -> Result<(), CliError> {
@@ -537,7 +574,12 @@ fn run_list(args: InboxListArgs) -> Result<(), CliError> {
 // ===========================================================================
 
 /// Arguments for `cardanowall inbox decrypt`.
-#[derive(Debug, Args)]
+///
+/// `api_key` is a bearer token, `blockfrost` is an API credential, and the
+/// flattened `identity` carries secret material; `Debug` is hand-written to
+/// redact the key and the project id (the identity redacts itself) so no
+/// `{:?}`, log, or panic path can surface any of them.
+#[derive(Args)]
 pub struct InboxDecryptArgs {
     /// 64-hex Cardano transaction hash.
     pub tx_hash: String,
@@ -580,6 +622,31 @@ pub struct InboxDecryptArgs {
     /// pretty-print JSON output.
     #[arg(long)]
     pub pretty: bool,
+}
+
+impl std::fmt::Debug for InboxDecryptArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InboxDecryptArgs")
+            .field("tx_hash", &self.tx_hash)
+            .field("item", &self.item)
+            .field("out", &self.out)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
+            .field("gateway_profile", &self.gateway_profile)
+            .field("gateway", &self.gateway)
+            // Blockfrost project id is an API credential.
+            .field(
+                "blockfrost",
+                &self.blockfrost.as_ref().map(|_| "[redacted]"),
+            )
+            .field("arweave_gateway", &self.arweave_gateway)
+            .field("ipfs_gateway", &self.ipfs_gateway)
+            .field("deny_host", &self.deny_host)
+            .field("identity", &self.identity)
+            .field("json", &self.json)
+            .field("pretty", &self.pretty)
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1166,6 +1233,67 @@ mod tests {
             pretty: false,
         };
         assert_eq!(run_list(args).unwrap_err().code, 4);
+    }
+
+    #[test]
+    fn sync_args_debug_redacts_api_key_and_identity() {
+        let args = InboxSyncArgs {
+            base_url: Some("https://gw.example".to_string()),
+            api_key: Some("super-secret-bearer".to_string()),
+            gateway_profile: None,
+            threshold: None,
+            identity: seed_source(Some(&"ab".repeat(32)), None),
+            json: false,
+            pretty: false,
+        };
+        let rendered = format!("{args:?}");
+        assert!(!rendered.contains("super-secret-bearer"));
+        assert!(!rendered.contains(&"ab".repeat(32)));
+        assert!(rendered.contains("[redacted]"));
+        assert!(rendered.contains("https://gw.example"));
+    }
+
+    #[test]
+    fn list_args_debug_redacts_blockfrost_and_identity() {
+        let args = InboxListArgs {
+            gateway: vec!["https://koios.example".to_string()],
+            blockfrost: Some("mainnetSECRETprojectid".to_string()),
+            deny_host: vec![],
+            identity: seed_source(Some(&"ab".repeat(32)), None),
+            json: false,
+            pretty: false,
+        };
+        let rendered = format!("{args:?}");
+        assert!(!rendered.contains("mainnetSECRETprojectid"));
+        assert!(!rendered.contains(&"ab".repeat(32)));
+        assert!(rendered.contains("[redacted]"));
+        assert!(rendered.contains("https://koios.example"));
+    }
+
+    #[test]
+    fn decrypt_args_debug_redacts_api_key_blockfrost_and_identity() {
+        let args = InboxDecryptArgs {
+            tx_hash: "00".repeat(32),
+            item: None,
+            out: None,
+            base_url: Some("https://gw.example".to_string()),
+            api_key: Some("super-secret-bearer".to_string()),
+            gateway_profile: None,
+            gateway: vec![],
+            blockfrost: Some("mainnetSECRETprojectid".to_string()),
+            arweave_gateway: vec![],
+            ipfs_gateway: vec![],
+            deny_host: vec![],
+            identity: seed_source(None, Some(&"cd".repeat(32))),
+            json: false,
+            pretty: false,
+        };
+        let rendered = format!("{args:?}");
+        assert!(!rendered.contains("super-secret-bearer"));
+        assert!(!rendered.contains("mainnetSECRETprojectid"));
+        assert!(!rendered.contains(&"cd".repeat(32)));
+        assert!(rendered.contains("[redacted]"));
+        assert!(rendered.contains("https://gw.example"));
     }
 
     #[test]

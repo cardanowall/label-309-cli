@@ -85,7 +85,11 @@ pub struct RecordSource {
 
 /// The seed-input options shared by the verbs that derive a signer from the
 /// master seed. Carries the raw flag plus its `*-file` / `*-stdin` variants.
-#[derive(Debug, Args, Clone, Default)]
+///
+/// `seed` carries raw secret material passed on argv, so `Debug` is hand-written
+/// to redact it: no `{:?}`, log, or panic-backtrace path can ever surface the
+/// value.
+#[derive(Args, Clone, Default)]
 pub struct SeedSource {
     /// 32-byte master identity seed: 64-digit hex or the checksummed
     /// L309-SEED-1... form. INSECURE on argv (shell history / ps / CI logs);
@@ -98,6 +102,16 @@ pub struct SeedSource {
     /// read the seed from stdin (also `--seed -`).
     #[arg(long = "seed-stdin")]
     pub seed_stdin: bool,
+}
+
+impl std::fmt::Debug for SeedSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeedSource")
+            .field("seed", &self.seed.as_ref().map(|_| "[redacted]"))
+            .field("seed_file", &self.seed_file)
+            .field("seed_stdin", &self.seed_stdin)
+            .finish()
+    }
 }
 
 impl SeedSource {
@@ -485,5 +499,18 @@ mod tests {
             signature: Some("aa".repeat(10)),
         };
         assert_eq!(run_assemble(args).unwrap_err().code, 4);
+    }
+
+    #[test]
+    fn seed_source_debug_redacts_seed() {
+        let source = SeedSource {
+            seed: Some("ab".repeat(32)),
+            seed_file: Some("/path/to/seed".to_string()),
+            seed_stdin: false,
+        };
+        let rendered = format!("{source:?}");
+        assert!(!rendered.contains(&"ab".repeat(32)));
+        assert!(rendered.contains("[redacted]"));
+        assert!(rendered.contains("/path/to/seed"));
     }
 }

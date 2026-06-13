@@ -53,7 +53,10 @@ const HASH_RECORD_BYTES_ESTIMATE: u64 = 256;
 const MERKLE_RECORD_BYTES_ESTIMATE: u64 = 320;
 
 /// Arguments for `cardanowall submit`.
-#[derive(Debug, Args)]
+/// `seed` (the raw argv identity seed) and `api_key` (the bearer token) are
+/// secret material, so `Debug` is hand-written to redact both: no `{:?}`, log,
+/// or panic-backtrace path can ever surface them.
+#[derive(Args)]
 pub struct SubmitArgs {
     /// 64-hex precomputed digest (default alg sha2-256).
     #[arg(long)]
@@ -100,6 +103,25 @@ pub struct SubmitArgs {
     /// emit a machine-readable JSON summary on stdout.
     #[arg(long)]
     pub json: bool,
+}
+
+impl std::fmt::Debug for SubmitArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubmitArgs")
+            .field("hash", &self.hash)
+            .field("file", &self.file)
+            .field("merkle", &self.merkle)
+            .field("alg", &self.alg)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
+            .field("seed", &self.seed.as_ref().map(|_| "[redacted]"))
+            .field("seed_file", &self.seed_file)
+            .field("seed_stdin", &self.seed_stdin)
+            .field("base_url", &self.base_url)
+            .field("gateway_profile", &self.gateway_profile)
+            .field("chunk_bytes", &self.chunk_bytes)
+            .field("json", &self.json)
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -632,5 +654,43 @@ mod tests {
     #[test]
     fn rejects_bad_leaf() {
         assert_eq!(parse_leaves_file("zzz\n", "f").unwrap_err().code, 4);
+    }
+
+    #[test]
+    fn submit_args_debug_redacts_seed_and_api_key() {
+        let mut args = base_args();
+        args.seed = Some("ab".repeat(32));
+        args.api_key = Some("super-secret-bearer".to_string());
+        args.base_url = Some("https://gw.example".to_string());
+        let rendered = format!("{args:?}");
+        assert!(!rendered.contains(&"ab".repeat(32)));
+        assert!(!rendered.contains("super-secret-bearer"));
+        assert!(rendered.contains("[redacted]"));
+        // Non-secret fields stay visible for debugging.
+        assert!(rendered.contains("https://gw.example"));
+    }
+
+    #[test]
+    fn gateway_profile_debug_redacts_api_key() {
+        let profile = crate::config::GatewayProfile {
+            base_url: "https://gw.example".to_string(),
+            api_key: Some("super-secret-bearer".to_string()),
+        };
+        let rendered = format!("{profile:?}");
+        assert!(!rendered.contains("super-secret-bearer"));
+        assert!(rendered.contains("[redacted]"));
+        assert!(rendered.contains("https://gw.example"));
+    }
+
+    #[test]
+    fn service_gateway_debug_redacts_api_key() {
+        let gw = crate::secret::ServiceGateway {
+            base_url: "https://gw.example".to_string(),
+            api_key: Some("super-secret-bearer".to_string()),
+        };
+        let rendered = format!("{gw:?}");
+        assert!(!rendered.contains("super-secret-bearer"));
+        assert!(rendered.contains("[redacted]"));
+        assert!(rendered.contains("https://gw.example"));
     }
 }

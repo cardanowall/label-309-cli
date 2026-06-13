@@ -17,7 +17,11 @@ use crate::config::read_config_file::CardanoWallConfig;
 use crate::util::CliError;
 
 /// The resolved gateway chains and scalars the verifier / inbox paths consume.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// `blockfrost_project_id` is a Blockfrost API credential, so `Debug` is
+/// hand-written to redact it: no `{:?}`, log, or assert-failure path can surface
+/// the project id.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ResolvedGateways {
     /// Cardano (Koios-compatible) gateway chain.
     pub cardano_gateway_chain: Vec<String>,
@@ -34,8 +38,30 @@ pub struct ResolvedGateways {
     pub deny_hosts: Option<Vec<String>>,
 }
 
+impl std::fmt::Debug for ResolvedGateways {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedGateways")
+            .field("cardano_gateway_chain", &self.cardano_gateway_chain)
+            .field(
+                "blockfrost_project_id",
+                &self.blockfrost_project_id.as_ref().map(|_| "[redacted]"),
+            )
+            .field("arweave_gateway_chain", &self.arweave_gateway_chain)
+            .field("ipfs_gateway_chain", &self.ipfs_gateway_chain)
+            .field(
+                "confirmation_depth_threshold",
+                &self.confirmation_depth_threshold,
+            )
+            .field("deny_hosts", &self.deny_hosts)
+            .finish()
+    }
+}
+
 /// Flag inputs, already collected by clap (empty vec = flag not given).
-#[derive(Debug, Clone, Default)]
+///
+/// `blockfrost` is a Blockfrost API credential, so `Debug` is hand-written to
+/// redact it: no `{:?}`, log, or panic path can surface the project id.
+#[derive(Clone, Default)]
 pub struct GatewayFlags {
     /// `--cardano-gateway` (repeatable).
     pub gateway: Vec<String>,
@@ -49,6 +75,22 @@ pub struct GatewayFlags {
     pub threshold: Option<u32>,
     /// `--deny-host` (repeatable).
     pub deny_host: Vec<String>,
+}
+
+impl std::fmt::Debug for GatewayFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GatewayFlags")
+            .field("gateway", &self.gateway)
+            .field(
+                "blockfrost",
+                &self.blockfrost.as_ref().map(|_| "[redacted]"),
+            )
+            .field("arweave_gateway", &self.arweave_gateway)
+            .field("ipfs_gateway", &self.ipfs_gateway)
+            .field("threshold", &self.threshold)
+            .field("deny_host", &self.deny_host)
+            .finish()
+    }
 }
 
 /// The environment lookups the resolver needs, injected for tests.
@@ -453,5 +495,37 @@ mod tests {
             resolve_gateways(&flags, &env(&[]), None).unwrap_err().code,
             4
         );
+    }
+
+    #[test]
+    fn gateway_flags_debug_redacts_blockfrost() {
+        let flags = GatewayFlags {
+            gateway: vec!["https://koios.example".to_string()],
+            blockfrost: Some("mainnetSECRETprojectid".to_string()),
+            ..GatewayFlags::default()
+        };
+        let rendered = format!("{flags:?}");
+        assert!(!rendered.contains("mainnetSECRETprojectid"));
+        assert!(rendered.contains("[redacted]"));
+        // Gateway URLs are not credentials and stay visible.
+        assert!(rendered.contains("https://koios.example"));
+    }
+
+    #[test]
+    fn resolved_gateways_debug_redacts_blockfrost() {
+        let resolved = resolve_gateways(
+            &GatewayFlags {
+                gateway: vec!["https://koios.example".to_string()],
+                blockfrost: Some("mainnetSECRETprojectid".to_string()),
+                ..GatewayFlags::default()
+            },
+            &env(&[]),
+            None,
+        )
+        .unwrap();
+        let rendered = format!("{resolved:?}");
+        assert!(!rendered.contains("mainnetSECRETprojectid"));
+        assert!(rendered.contains("[redacted]"));
+        assert!(rendered.contains("https://koios.example"));
     }
 }

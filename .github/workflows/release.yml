@@ -58,6 +58,35 @@ jobs:
       - name: Install stable toolchain
         run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
 
+      # ---- Wait for the SDK crate to be live on crates.io ----------------------
+      # In the coordinated release, label-309-rs publishes `cardanowall` and this
+      # repo publishes `cardanowall-cli` from tags pushed at the same moment, so
+      # the two release workflows race. This crate pins `cardanowall = "<version>"`
+      # from crates.io, so BOTH the gate build below and the publish step need the
+      # SDK already in the registry index. Poll the sparse index — the exact source
+      # cargo resolves against — until the matching version appears (up to ~15
+      # minutes), then fail loudly with a re-run hint instead of erroring deep in a
+      # compile. Tag-push only: a workflow_dispatch dry-run carries no release
+      # version and skips this.
+      - name: Wait for `cardanowall` SDK on crates.io
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          url="https://index.crates.io/ca/rd/cardanowall"
+          echo "Waiting for cardanowall@$version on the crates.io index..."
+          for attempt in $(seq 1 90); do
+            if curl -fsSL "$url" | grep -q '"vers":"'"$version"'"'; then
+              echo "cardanowall@$version is live (after $attempt check(s)); brief grace pause before publish."
+              sleep 15
+              exit 0
+            fi
+            echo "  check $attempt/90: not in the index yet; sleeping 10s..."
+            sleep 10
+          done
+          echo "::error::cardanowall@$version did not reach crates.io within ~15 min - label-309-rs may still be running or failed; re-run this workflow once the SDK is published."
+          exit 1
+
       # ---- Gates: the standalone CI suite, re-run as release-blockers ----------
       - name: Format check
         run: cargo fmt --check

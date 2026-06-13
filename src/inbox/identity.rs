@@ -23,7 +23,11 @@ use crate::util::{hex_to_bytes, CliError};
 
 /// The identity-input flags shared by every inbox verb: exactly one of the seed
 /// family or the secret-key family, each with raw / `*-file` / `*-stdin` variants.
-#[derive(Debug, Args, Clone, Default)]
+///
+/// `seed` and `secret_key` carry raw secret material passed on argv, so `Debug`
+/// is hand-written to redact both: no `{:?}`, log, or panic-backtrace path can
+/// ever surface the value.
+#[derive(Args, Clone, Default)]
 pub struct IdentitySource {
     /// 32-byte master identity seed: 64-digit hex or the checksummed
     /// L309-SEED-1... form. INSECURE on argv (shell history / ps / CI logs);
@@ -46,6 +50,22 @@ pub struct IdentitySource {
     /// read the X25519 secret key from stdin.
     #[arg(long = "secret-key-stdin")]
     pub secret_key_stdin: bool,
+}
+
+impl std::fmt::Debug for IdentitySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdentitySource")
+            .field("seed", &self.seed.as_ref().map(|_| "[redacted]"))
+            .field("seed_file", &self.seed_file)
+            .field("seed_stdin", &self.seed_stdin)
+            .field(
+                "secret_key",
+                &self.secret_key.as_ref().map(|_| "[redacted]"),
+            )
+            .field("secret_key_file", &self.secret_key_file)
+            .field("secret_key_stdin", &self.secret_key_stdin)
+            .finish()
+    }
 }
 
 impl IdentitySource {
@@ -260,8 +280,11 @@ fn resolve_from_secret_key_hex(secret_key_hex: &str) -> Result<ResolvedIdentity,
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
+        // Report only the length: the value is a secret key and must never be
+        // echoed back into the terminal, shell history, or CI logs.
         return Err(CliError::input(format!(
-            "inbox: --secret-key must be a 64-char lowercase-hex string; got \"{secret_key_hex}\""
+            "inbox: --secret-key must be a 64-char lowercase-hex string; got a {}-char value",
+            secret_key_hex.chars().count()
         )));
     }
     let bytes = hex_to_bytes(secret_key_hex)
@@ -325,5 +348,48 @@ mod tests {
                 .code,
             4
         );
+    }
+
+    #[test]
+    fn secret_key_shape_error_reports_length_not_value() {
+        // A malformed (uppercase) secret-key must reject without echoing the key
+        // bytes; the message reports only the observed length.
+        let bad = "AB".repeat(32);
+        let err = resolve_identity(None, Some(&bad), "inbox sync").unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(!err.message.contains(&bad));
+        assert!(err.message.contains("64-char"));
+    }
+
+    #[test]
+    fn seed_hex_decode_error_reports_length_not_value() {
+        // A 64-char seed-shaped value with a stray non-hex byte rejects via the
+        // shared hex decoder, which never echoes the input.
+        let mut bad = "ab".repeat(31);
+        bad.push_str("ax");
+        let err = resolve_identity(Some(&bad), None, "inbox sync").unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(!err.message.contains(&bad));
+        assert!(!err.message.contains(&"ab".repeat(31)));
+    }
+
+    #[test]
+    fn debug_redacts_seed_and_secret_key() {
+        // A `{:?}` of IdentitySource (log line, panic backtrace) must never
+        // surface the raw seed or secret-key argv values; the file/stdin flags
+        // are not secret and stay visible for debugging.
+        let source = IdentitySource {
+            seed: Some("ab".repeat(32)),
+            seed_file: Some("/path/to/seed".to_string()),
+            seed_stdin: false,
+            secret_key: Some("cd".repeat(32)),
+            secret_key_file: None,
+            secret_key_stdin: true,
+        };
+        let rendered = format!("{source:?}");
+        assert!(!rendered.contains(&"ab".repeat(32)));
+        assert!(!rendered.contains(&"cd".repeat(32)));
+        assert!(rendered.contains("[redacted]"));
+        assert!(rendered.contains("/path/to/seed"));
     }
 }

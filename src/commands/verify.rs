@@ -23,11 +23,18 @@ use crate::config::{
     SystemGatewayEnv,
 };
 use crate::output::render_human_report;
-use crate::secret::{SecretEnv, SystemSecretEnv};
+use crate::secret::{
+    enforce_single_secret_source, warn_secret_on_argv, SecretEnv, SecretKind, SecretSources,
+    SystemSecretEnv,
+};
 use crate::util::{hex_to_bytes, CliError};
 
 /// Arguments for `cardanowall verify`.
-#[derive(Debug, Args)]
+///
+/// `secret_key` carries raw recipient secret keys passed on argv and `blockfrost`
+/// is a Blockfrost project id (an API credential), so `Debug` is hand-written to
+/// redact both: no `{:?}`, log, or panic-backtrace path can ever surface them.
+#[derive(Args)]
 pub struct VerifyArgs {
     /// 64-hex Cardano transaction hash.
     pub tx_hash: String,
@@ -81,6 +88,37 @@ pub struct VerifyArgs {
     pub pretty: bool,
 }
 
+impl std::fmt::Debug for VerifyArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VerifyArgs")
+            .field("tx_hash", &self.tx_hash)
+            .field("profile", &self.profile)
+            .field("cardano_gateway", &self.cardano_gateway)
+            // The Blockfrost project id authenticates requests to Blockfrost, so
+            // it is a credential and must never surface in a debug dump.
+            .field(
+                "blockfrost",
+                &self.blockfrost.as_ref().map(|_| "[redacted]"),
+            )
+            .field("arweave_gateway", &self.arweave_gateway)
+            .field("ipfs_gateway", &self.ipfs_gateway)
+            .field("threshold", &self.threshold)
+            .field("deny_host", &self.deny_host)
+            // The recipient secret keys are secret material: report only how many
+            // were supplied, never the bytes.
+            .field(
+                "secret_key",
+                &format_args!("[{} redacted]", self.secret_key.len()),
+            )
+            .field("secret_key_file", &self.secret_key_file)
+            .field("secret_key_stdin", &self.secret_key_stdin)
+            .field("no_fetch", &self.no_fetch)
+            .field("json", &self.json)
+            .field("pretty", &self.pretty)
+            .finish()
+    }
+}
+
 const PROFILES: [(&str, Profile); 4] = [
     ("core", Profile::Core),
     ("signed", Profile::Signed),
@@ -101,18 +139,39 @@ fn parse_threshold(raw: Option<&str>) -> Result<Option<u32>, CliError> {
     }
 }
 
-/// Gather the raw recipient-secret-key specs from the four sources, in priority
-/// order: explicit `--secret-key` flags, then `--secret-key-file`, then
-/// `--secret-key-stdin`, then `CARDANOWALL_RECIPIENT_KEY`. The first non-empty
-/// source wins (these are alternative inputs, not merged). Each source may carry
-/// several keys (repeated flag, one-per-line in a file/stdin, or a comma/space
-/// list in the env var).
+/// Gather the recipient-secret-key specs from a single source. Unlike the other
+/// commands, `verify` accepts a *list* of keys per source — a repeated
+/// `--secret-key` flag, one-per-line in a file/stdin, or a comma/space list in
+/// `CARDANOWALL_RECIPIENT_KEY` — and tries every key against every sealed item.
+///
+/// The single-source rule still applies: providing the key list from more than
+/// one source (e.g. a file plus the env var, or argv plus a file) is a hard CLI
+/// input error, identical to every other secret-bearing command, so a stale
+/// source can never silently shadow an explicit one. With a single source the
+/// order is argv → file → stdin → env.
 fn collect_secret_key_specs(
     args: &VerifyArgs,
     env: &dyn SecretEnv,
 ) -> Result<Vec<String>, CliError> {
-    // 1. explicit repeatable flags.
+    let kind = SecretKind::RecipientKey;
+    enforce_single_secret_source(
+        kind,
+        SecretSources {
+            file: args
+                .secret_key_file
+                .as_deref()
+                .is_some_and(|p| !p.is_empty()),
+            stdin: args.secret_key_stdin,
+            argv: !args.secret_key.is_empty(),
+            env: env.var(kind.env_var()).is_some(),
+        },
+        "verify",
+    )?;
+
+    // 1. explicit repeatable flags — the documented-insecure argv path; warn
+    //    that the keys are exposed in shell history / `ps` / CI logs.
     if !args.secret_key.is_empty() {
+        warn_secret_on_argv(kind, env);
         return Ok(args.secret_key.clone());
     }
     // 2. file (one spec per line).
@@ -126,7 +185,7 @@ fn collect_secret_key_specs(
         return Ok(split_secret_lines(&raw));
     }
     // 4. env var (comma / whitespace separated).
-    if let Some(value) = env.var("CARDANOWALL_RECIPIENT_KEY") {
+    if let Some(value) = env.var(kind.env_var()) {
         return Ok(split_secret_list(&value));
     }
     Ok(Vec::new())
@@ -155,9 +214,12 @@ fn split_secret_list(raw: &str) -> Vec<String> {
 /// no item index.
 fn parse_secret_key(raw: &str) -> Result<Vec<u8>, CliError> {
     if raw.contains(':') {
+        // Report only the length: the value is a recipient secret key, so it must
+        // never be echoed back into the terminal, shell history, or CI logs.
         return Err(CliError::input(format!(
-            "verify: --secret-key takes the bare key hex (keys are tried against every \
-             sealed item, so there is no per-item index); got \"{raw}\""
+            "verify: --secret-key expects bare hex (no scheme prefix); got a {}-char value \
+             containing ':' (keys are tried against every sealed item, so there is no per-item index)",
+            raw.chars().count()
         )));
     }
     hex_to_bytes(raw).map_err(|e| CliError::input(format!("verify: --secret-key {e}")))
@@ -387,14 +449,27 @@ mod tests {
         let key = parse_secret_key(&"cd".repeat(32)).unwrap();
         assert_eq!(key.len(), 32);
         // The keyring is global to the run; a per-item index prefix is not a
-        // valid spec and must fail as CLI input (exit 4) with a clear message.
-        assert_eq!(
-            parse_secret_key(&format!("3:{}", "ab".repeat(32)))
-                .unwrap_err()
-                .code,
-            4
-        );
+        // valid spec and must fail as CLI input (exit 4) with a clear message
+        // that reports only the length, never the key bytes.
+        let indexed = format!("3:{}", "ab".repeat(32));
+        let err = parse_secret_key(&indexed).unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(err.message.contains("bare hex"));
+        assert!(!err.message.contains(&"ab".repeat(32)));
+        assert!(!err.message.contains(&indexed));
         assert_eq!(parse_secret_key("not-hex").unwrap_err().code, 4);
+    }
+
+    #[test]
+    fn secret_key_hex_error_does_not_leak_the_key() {
+        // A 64-char secret-shaped value with one stray byte must reject without
+        // echoing the value (the shared hex decoder enforces this).
+        let mut bad = "ab".repeat(31);
+        bad.push_str("ax");
+        let err = parse_secret_key(&bad).unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(!err.message.contains(&bad));
+        assert!(!err.message.contains(&"ab".repeat(31)));
     }
 
     #[test]
@@ -405,10 +480,33 @@ mod tests {
     }
 
     #[test]
-    fn secret_key_specs_from_flags_take_priority() {
+    fn secret_key_specs_from_a_single_flag_source_resolve_and_warn() {
         use crate::secret::test_support::FakeSecretEnv;
         let mut args = base_args(&"0".repeat(64));
-        args.secret_key = vec![format!("0:{}", "ab".repeat(32))];
+        args.secret_key = vec!["ab".repeat(32)];
+        let env = FakeSecretEnv::default();
+        let specs = collect_secret_key_specs(&args, &env).unwrap();
+        assert_eq!(specs, vec!["ab".repeat(32)]);
+        // The argv path warns through the captured sink, never echoing the key.
+        let warnings = env.warnings.borrow();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("insecure"));
+        assert!(warnings[0].contains("--secret-key"));
+        assert!(!warnings[0].contains(&"ab".repeat(32)));
+        // And drives the auto profile to recipient-sealed.
+        assert_eq!(
+            choose_profile(&args, !specs.is_empty()).unwrap(),
+            Profile::RecipientSealed
+        );
+    }
+
+    #[test]
+    fn secret_key_specs_from_more_than_one_source_are_a_conflict_error() {
+        use crate::secret::test_support::FakeSecretEnv;
+        // argv flag AND env var: verify shares the same single-source rule as the
+        // rest of the CLI, so this must hard-error rather than silently first-win.
+        let mut args = base_args(&"0".repeat(64));
+        args.secret_key = vec!["ab".repeat(32)];
         let env = FakeSecretEnv {
             vars: std::collections::HashMap::from([(
                 "CARDANOWALL_RECIPIENT_KEY".to_string(),
@@ -416,13 +514,30 @@ mod tests {
             )]),
             ..FakeSecretEnv::default()
         };
-        let specs = collect_secret_key_specs(&args, &env).unwrap();
-        assert_eq!(specs, vec![format!("0:{}", "ab".repeat(32))]);
-        // And drives the auto profile to recipient-sealed.
-        assert_eq!(
-            choose_profile(&args, !specs.is_empty()).unwrap(),
-            Profile::RecipientSealed
-        );
+        let err = collect_secret_key_specs(&args, &env).unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(err.message.contains("more than one source"));
+        assert!(err.message.contains("--secret-key"));
+        assert!(err.message.contains("CARDANOWALL_RECIPIENT_KEY"));
+        // The conflicting key bytes never appear in the message.
+        assert!(!err.message.contains(&"ab".repeat(32)));
+        assert!(!err.message.contains(&"cd".repeat(32)));
+
+        // file AND argv is also a conflict (the case the old priority hid).
+        let mut file_args = base_args(&"0".repeat(64));
+        file_args.secret_key = vec!["ab".repeat(32)];
+        file_args.secret_key_file = Some("/keys".to_string());
+        let file_env = FakeSecretEnv {
+            files: std::collections::HashMap::from([(
+                "/keys".to_string(),
+                format!("{}\n", "cd".repeat(32)),
+            )]),
+            ..FakeSecretEnv::default()
+        };
+        let err = collect_secret_key_specs(&file_args, &file_env).unwrap_err();
+        assert_eq!(err.code, 4);
+        assert!(err.message.contains("--secret-key-file"));
+        assert!(err.message.contains("--secret-key"));
     }
 
     #[test]
@@ -432,11 +547,30 @@ mod tests {
         let env = FakeSecretEnv {
             vars: std::collections::HashMap::from([(
                 "CARDANOWALL_RECIPIENT_KEY".to_string(),
-                format!("{}, 1:{}", "ab".repeat(32), "cd".repeat(32)),
+                format!("{}, {}", "ab".repeat(32), "cd".repeat(32)),
             )]),
             ..FakeSecretEnv::default()
         };
         let specs = collect_secret_key_specs(&args, &env).unwrap();
         assert_eq!(specs.len(), 2);
+        // The env source is silent — no argv warning.
+        assert!(env.warnings.borrow().is_empty());
+    }
+
+    #[test]
+    fn verify_args_debug_redacts_secret_keys_and_blockfrost() {
+        // A `{:?}` of VerifyArgs must never surface the recipient key bytes or
+        // the Blockfrost project id (an API credential); non-secret fields stay
+        // visible for debugging.
+        let mut args = base_args(&"0".repeat(64));
+        args.secret_key = vec!["ab".repeat(32), "cd".repeat(32)];
+        args.blockfrost = Some("mainnetSECRETprojectid".to_string());
+        let rendered = format!("{args:?}");
+        assert!(!rendered.contains(&"ab".repeat(32)));
+        assert!(!rendered.contains(&"cd".repeat(32)));
+        assert!(!rendered.contains("mainnetSECRETprojectid"));
+        assert!(rendered.contains("redacted"));
+        // The tx hash is not secret and stays visible.
+        assert!(rendered.contains(&"0".repeat(64)));
     }
 }

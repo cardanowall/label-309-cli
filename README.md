@@ -173,14 +173,22 @@ cardanowall completion bash > /etc/bash_completion.d/cardanowall
 ## Secrets & safety
 
 Secrets are **never required as a command-line argument** — argv leaks into shell
-history, `ps`, and CI logs. Every command that needs a seed or recipient key
-resolves it in this order:
+history, `ps`, and CI logs. A seed or recipient key must come from **exactly one**
+source; supplying it from more than one is a hard error (so a stale `--seed-file`
+can never silently shadow an explicit `--seed`). With a single source, each
+command resolves it in this order:
 
 1. `--seed-file <path>` / `--secret-key-file <path>` (read from a file)
 2. `--seed-stdin` / `--secret-key-stdin` (or the value `-`) — read from stdin
-3. the matching environment variable (see below)
-4. a **hidden interactive prompt** — only on a TTY, when the secret is required
-5. otherwise, a clear error pointing at options 1–3
+3. the raw `--seed <value>` / `--secret-key <hex>` flag — the **insecure** path
+   (see below); using it prints a one-line stderr warning
+4. the matching environment variable (see below)
+5. a **hidden interactive prompt** — only on a TTY, when the secret is required
+6. otherwise, a clear error pointing at options 1–4
+
+If two or more of these are present at once (for example `--seed-file` plus
+`CARDANOWALL_SEED`), the command fails with a CLI input error naming the
+conflicting sources and asking you to keep exactly one.
 
 On every path `--seed` accepts both seed representations — 64-digit raw hex or
 the checksummed `L309-SEED-1…` form; `--secret-key` is a raw X25519 key and is
@@ -188,7 +196,10 @@ hex-only.
 
 The raw `--seed <value>` / `--secret-key <hex>` flags still exist for throwaway/
 test values (e.g. inspecting a public test vector with `identity`) but are
-documented as **insecure** and should not carry a real key.
+documented as **insecure**, emit a stderr warning when used, and should not
+carry a real key. Errors that reject a malformed seed or key report only its
+length (and, for a bad hex digit, the offset) — never the value itself, so a
+mistyped secret never lands in your terminal scrollback or CI logs.
 
 The moderately-sensitive API key may be stored in a gateway profile; that file is
 written with `0600` permissions and the key is masked in `list`/`show`.
@@ -213,9 +224,19 @@ arweave_gateway = "https://arweave.net"
 ipfs_gateway    = "https://ipfs.io"
 ```
 
-Resolution precedence for every value: **explicit flag → environment variable →
-active gateway profile → built-in default** (the built-in default applies to the
-public data gateways only; a service `--base-url`/`--api-key` has no default).
+Resolution precedence depends on which value it is:
+
+- **Service gateway** (`--base-url` / `--api-key`): **explicit flag → environment
+  variable → active gateway profile**. There is no built-in default — a service
+  endpoint must be supplied from one of these.
+- **Public data sources** (`--cardano-gateway` / `--arweave-gateway` /
+  `--ipfs-gateway` / `--blockfrost` / `--threshold` / `--deny-host`): **explicit
+  flag → environment variable → config-file top-level key → built-in default**.
+  These read the top-level `config.toml` keys shown above (not a named gateway
+  profile); the built-in default chain applies only when nothing else resolves.
+
+In every chain the first non-empty source wins; lower-precedence sources are not
+merged in.
 
 ---
 
