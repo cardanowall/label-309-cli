@@ -9,6 +9,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > Pre-1.0 versions do not carry the stability guarantees of
 > [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-06-16
+
+### Added
+
+- `cardanowall certificate build|verify` — build a Label 309 inclusion certificate (locate each target leaf in an off-chain leaves-list, compute its RFC 9162 inclusion proof, and emit the JSON certificate plus the optional COSE CBOR proof) and verify one offline from its own bytes. Exit codes pair with the verdict (`0` verified, `1` inclusion-failed, `2` IO/usage, `4` malformed input).
+
+### Changed
+
+- Track the `cardanowall` SDK 0.7.0: client base URLs now carry the full versioned API root (the API version segment lives in the configured base URL, not in client code), and the removed server-side verify path leaves `verify` as a purely standalone, no-server-trust operation.
+
+### Fixed
+
+- `submit`: the `--json` outcome renders `status` as its canonical wire string.
+
 ## [0.6.0] - 2026-06-13
 
 ### Security

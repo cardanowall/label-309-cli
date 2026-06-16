@@ -6,9 +6,10 @@ derive an identity from a seed, build/verify Merkle proofs, and read a sealed
 inbox.
 
 It is **gateway-agnostic**. Every networked command takes an explicit gateway
-base URL and an opaque API key — the CLI is bound to no particular operator. The
-hosted `cardanowall.com` service is one such gateway; any server that implements
-the Label 309 gateway API works the same way. **`verify` needs no gateway operator
+base URL (the full base, version segment included — e.g.
+`https://cardanowall.com/api/v1`) and an opaque API key — the CLI is bound to no
+particular operator. The hosted `cardanowall.com` service is one such gateway;
+any server that implements the Label 309 gateway API works the same way. **`verify` needs no gateway operator
 at all** — it talks only to public Cardano explorers (Koios/Blockfrost) and
 public Arweave/IPFS gateways, so a proof can be checked with zero trust in the
 issuer, their domain, or their server.
@@ -57,7 +58,7 @@ printf '%s' "$SEED_HEX" | cardanowall identity --seed-stdin
 cardanowall verify <tx-hash> --cardano-gateway https://api.koios.rest/api/v1
 
 # Save a gateway once, then anchor a file's hash through it:
-cardanowall gateway add prod --base-url https://cardanowall.com   # prompts for the key
+cardanowall gateway add prod --base-url https://cardanowall.com/api/v1   # prompts for the key
 cardanowall submit --file ./contract.pdf --seed-stdin <<<"$SEED_HEX"
 ```
 
@@ -152,8 +153,8 @@ Named gateway profiles (an endpoint + its API key). This is configuration, not a
 login — the gateway API is key-based.
 
 ```bash
-cardanowall gateway add prod --base-url https://cardanowall.com   # hidden key prompt
-cardanowall gateway add prod --base-url https://cardanowall.com --api-key-stdin <<<"$KEY"  # for CI
+cardanowall gateway add prod --base-url https://cardanowall.com/api/v1   # hidden key prompt
+cardanowall gateway add prod --base-url https://cardanowall.com/api/v1 --api-key-stdin <<<"$KEY"  # for CI
 cardanowall gateway use prod
 cardanowall gateway list                 # keys masked
 cardanowall gateway show prod --reveal   # print the key
@@ -215,8 +216,8 @@ written `0600`:
 default_gateway = "prod"
 
 [gateways.prod]
-base_url = "https://cardanowall.com"
-api_key  = "…"                       # stored only if you saved one
+base_url = "https://cardanowall.com/api/v1"   # full base, version segment included
+api_key  = "…"                                # stored only if you saved one
 
 # Public data sources used by `verify` / `inbox` (each string or list):
 cardano_gateway = ["https://api.koios.rest/api/v1"]
@@ -228,7 +229,10 @@ Resolution precedence depends on which value it is:
 
 - **Service gateway** (`--base-url` / `--api-key`): **explicit flag → environment
   variable → active gateway profile**. There is no built-in default — a service
-  endpoint must be supplied from one of these.
+  endpoint must be supplied from one of these. The base URL is the **full** base
+  including the API version segment (e.g. `https://cardanowall.com/api/v1`); the
+  CLI appends only the resource path to it, so a future gateway version is reached
+  simply by configuring `…/api/v2`.
 - **Public data sources** (`--cardano-gateway` / `--arweave-gateway` /
   `--ipfs-gateway` / `--blockfrost` / `--threshold` / `--deny-host`): **explicit
   flag → environment variable → config-file top-level key → built-in default**.

@@ -2,6 +2,7 @@
 //! struct(s) and its `run` entry, returning `Result<(), CliError>` so the
 //! dispatcher in [`crate::cli`] can map the error to a process exit code.
 
+pub mod certificate;
 pub mod completion;
 pub mod gateway;
 pub mod identity;

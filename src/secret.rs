@@ -439,7 +439,9 @@ pub fn resolve_config_value(
 /// `{:?}`, log, or panic-backtrace path can ever surface the key.
 #[derive(Clone, Default)]
 pub struct ServiceGateway {
-    /// The required base URL.
+    /// The required base URL — the full base including the API version segment
+    /// (e.g. `https://gateway.example.com/api/v1`). The SDK appends only the
+    /// resource path to it.
     pub base_url: String,
     /// The opaque bearer API key, when supplied anywhere.
     pub api_key: Option<String>,
@@ -458,6 +460,8 @@ impl std::fmt::Debug for ServiceGateway {
 /// `explicit flag > env > active gateway profile` to each, and reading both env
 /// vars through the injected [`SecretEnv`].
 ///
+/// The base URL is the full base including the API version segment (e.g.
+/// `https://gateway.example.com/api/v1`); the SDK appends only the resource path.
 /// The base URL is required; the API key is optional (a key-less public gateway).
 /// `profile` is the active [`GatewayProfile`](crate::config::GatewayProfile)
 /// selected by the caller (the `--gateway-profile` flag or the config default).
@@ -483,7 +487,8 @@ pub fn resolve_service_gateway(
     .ok_or_else(|| {
         CliError::input(format!(
             "{cmd}: a gateway base URL is required — pass --base-url, set CARDANOWALL_BASE_URL, \
-             or configure a gateway profile (cardanowall gateway add …)"
+             or configure a gateway profile (cardanowall gateway add …). Use the full base \
+             including the version segment, e.g. https://gateway.example.com/api/v1"
         ))
     })?;
 

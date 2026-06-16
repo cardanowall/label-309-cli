@@ -51,7 +51,9 @@ impl StringOrList {
 /// no `{:?}`, log, or assert-failure path can surface the key.
 #[derive(Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct GatewayProfile {
-    /// The service-gateway base URL (e.g. `https://gateway.example.com`).
+    /// The service-gateway base URL — the full base including the API version
+    /// segment (e.g. `https://gateway.example.com/api/v1`). The SDK appends only
+    /// the resource path to it.
     pub base_url: String,
     /// The opaque bearer API key forwarded to this gateway, when set.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -255,8 +257,9 @@ pub fn parse_config_str(
     env: &dyn ConfigEnv,
 ) -> Result<CardanoWallConfig, CliError> {
     // First parse permissively to surface unknown keys as warnings, then parse
-    // strictly to enforce field types. `toml::Value` never rejects unknown keys.
-    if let Ok(toml::Value::Table(table)) = raw.parse::<toml::Value>() {
+    // strictly to enforce field types. A permissive `toml::Table` parse never
+    // rejects unknown keys.
+    if let Ok(table) = raw.parse::<toml::Table>() {
         for key in table.keys() {
             if !KNOWN_KEYS.contains(&key.as_str()) {
                 env.warn(&format!(
@@ -342,17 +345,22 @@ pub fn config_path(env: &dyn ConfigEnv) -> Result<PathBuf, CliError> {
 /// Re-serialise the parsed TOML keeping only known keys, so the strict
 /// `deny_unknown_fields` parse never trips on a key we already warned about.
 fn filter_known_keys(raw: &str) -> String {
-    let Ok(toml::Value::Table(table)) = raw.parse::<toml::Value>() else {
+    let Ok(table) = raw.parse::<toml::Table>() else {
         // Let the strict parse surface the real error.
         return raw.to_string();
     };
-    let mut kept = toml::value::Table::new();
+    let mut kept = toml::Table::new();
     for (k, v) in table {
         if KNOWN_KEYS.contains(&k.as_str()) {
             kept.insert(k, v);
         }
     }
-    toml::to_string(&toml::Value::Table(kept)).unwrap_or_else(|_| raw.to_string())
+    // Render via `Table`'s Display, which emits canonical TOML and is
+    // infallible. `toml::to_string(&Value::Table(..))` goes through the value
+    // serializer, which can return an error on re-serialisation; falling back
+    // to `raw` there would smuggle the unknown keys we just stripped past the
+    // strict parse.
+    kept.to_string()
 }
 
 #[cfg(test)]
@@ -482,7 +490,7 @@ mod tests {
         const PLANTED_KEY: &str = "superSECRETbearerTOKEN";
         let raw = format!(
             "[gateways.prod]\n\
-             base_url = \"https://gw.example\"\n\
+             base_url = \"https://gw.example/api/v1\"\n\
              api_key = \"{PLANTED_KEY}\n"
         );
         let env = env_with(
@@ -520,13 +528,13 @@ mod tests {
     #[test]
     fn gateway_profile_debug_redacts_api_key() {
         let profile = GatewayProfile {
-            base_url: "https://gw.example".to_string(),
+            base_url: "https://gw.example/api/v1".to_string(),
             api_key: Some("super-secret-bearer".to_string()),
         };
         let rendered = format!("{profile:?}");
         assert!(!rendered.contains("super-secret-bearer"));
         assert!(rendered.contains("[redacted]"));
-        assert!(rendered.contains("https://gw.example"));
+        assert!(rendered.contains("https://gw.example/api/v1"));
     }
 
     #[test]
@@ -538,7 +546,7 @@ mod tests {
         config.gateways.insert(
             "prod".to_string(),
             GatewayProfile {
-                base_url: "https://gw.example".to_string(),
+                base_url: "https://gw.example/api/v1".to_string(),
                 api_key: Some("super-secret-bearer".to_string()),
             },
         );
@@ -547,7 +555,7 @@ mod tests {
         assert!(!rendered.contains("super-secret-bearer"));
         assert!(rendered.contains("[redacted]"));
         // Non-secret fields stay visible.
-        assert!(rendered.contains("https://gw.example"));
+        assert!(rendered.contains("https://gw.example/api/v1"));
         assert!(rendered.contains("prod"));
     }
 }

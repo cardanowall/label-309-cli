@@ -4,7 +4,7 @@
 //! Three verbs:
 //!
 //! - `sync`    — page sealed records from a Label 309 gateway
-//!   (`/api/v1/records?sealed=true`), trial-decrypt each item with the recipient
+//!   (the `/records?sealed=true` resource), trial-decrypt each item with the recipient
 //!   key bundle, and persist confirmed matches to the local bookmark. The scan
 //!   works from on-chain record bytes and the seed-derived key alone: match and
 //!   CEK recovery fetch ZERO ciphertext. Records below the confirmation-depth
@@ -163,6 +163,7 @@ fn relabel(err: CliError, cmd: &str) -> CliError {
 #[derive(Args)]
 pub struct InboxSyncArgs {
     /// target Label 309 gateway base URL (or env CARDANOWALL_BASE_URL, or a profile).
+    /// Full base incl. the version segment, e.g. `https://cardanowall.com/api/v1`.
     #[arg(long = "base-url")]
     pub base_url: Option<String>,
     /// opaque bearer API key (or env CARDANOWALL_API_KEY, or a profile).
@@ -590,6 +591,7 @@ pub struct InboxDecryptArgs {
     #[arg(long)]
     pub out: Option<String>,
     /// target Label 309 gateway base URL (or env CARDANOWALL_BASE_URL, or a profile).
+    /// Full base incl. the version segment, e.g. `https://cardanowall.com/api/v1`.
     #[arg(long = "base-url")]
     pub base_url: Option<String>,
     /// opaque bearer API key (or env CARDANOWALL_API_KEY, or a profile).
@@ -1238,7 +1240,7 @@ mod tests {
     #[test]
     fn sync_args_debug_redacts_api_key_and_identity() {
         let args = InboxSyncArgs {
-            base_url: Some("https://gw.example".to_string()),
+            base_url: Some("https://gw.example/api/v1".to_string()),
             api_key: Some("super-secret-bearer".to_string()),
             gateway_profile: None,
             threshold: None,
@@ -1250,7 +1252,7 @@ mod tests {
         assert!(!rendered.contains("super-secret-bearer"));
         assert!(!rendered.contains(&"ab".repeat(32)));
         assert!(rendered.contains("[redacted]"));
-        assert!(rendered.contains("https://gw.example"));
+        assert!(rendered.contains("https://gw.example/api/v1"));
     }
 
     #[test]
@@ -1276,7 +1278,7 @@ mod tests {
             tx_hash: "00".repeat(32),
             item: None,
             out: None,
-            base_url: Some("https://gw.example".to_string()),
+            base_url: Some("https://gw.example/api/v1".to_string()),
             api_key: Some("super-secret-bearer".to_string()),
             gateway_profile: None,
             gateway: vec![],
@@ -1293,7 +1295,7 @@ mod tests {
         assert!(!rendered.contains("mainnetSECRETprojectid"));
         assert!(!rendered.contains(&"cd".repeat(32)));
         assert!(rendered.contains("[redacted]"));
-        assert!(rendered.contains("https://gw.example"));
+        assert!(rendered.contains("https://gw.example/api/v1"));
     }
 
     #[test]

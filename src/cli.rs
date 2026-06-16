@@ -44,7 +44,7 @@ use crate::util::version::version_string;
     about = "Label 309 standalone verifier and Proof-of-Existence toolkit",
     long_about = "Label 309 standalone verifier and Proof-of-Existence toolkit.\n\n\
         ENVIRONMENT (consistent across every command):\n  \
-        CARDANOWALL_BASE_URL       gateway base URL        (--base-url)\n  \
+        CARDANOWALL_BASE_URL       gateway base URL incl. version, e.g. .../api/v1  (--base-url)\n  \
         CARDANOWALL_API_KEY        opaque bearer API key   (--api-key)\n  \
         CARDANOWALL_SEED           identity seed: hex or L309-SEED-1...  (--seed)\n  \
         CARDANOWALL_RECIPIENT_KEY  X25519 recipient key (hex)  (--secret-key)\n  \
@@ -132,6 +132,8 @@ pub enum Command {
     Identity(commands::identity::IdentityArgs),
     /// Off-chain Merkle tooling.
     Merkle(commands::merkle::MerkleArgs),
+    /// Build and verify Label 309 inclusion certificates.
+    Certificate(commands::certificate::CertificateArgs),
     /// Sealed-PoE inbox commands.
     Inbox(commands::inbox::InboxArgs),
     /// Manage named service-gateway profiles (endpoint + API key).
@@ -149,6 +151,7 @@ impl Command {
             Command::Sign(_) => "sign",
             Command::Identity(_) => "identity",
             Command::Merkle(_) => "merkle",
+            Command::Certificate(_) => "certificate",
             Command::Inbox(_) => "inbox",
             Command::Gateway(_) => "gateway",
             Command::Completion(_) => "completion",
@@ -169,6 +172,7 @@ impl Command {
             Command::Sign(a) => a.source_json(),
             Command::Identity(a) => a.json,
             Command::Merkle(a) => a.json_mode(),
+            Command::Certificate(a) => a.json_mode(),
             Command::Inbox(a) => a.json_mode(),
             Command::Gateway(a) => a.json_mode(),
             Command::Completion(_) => false,
@@ -235,6 +239,7 @@ where
         Command::Sign(args) => commands::sign::run(args),
         Command::Identity(args) => commands::identity::run(args),
         Command::Merkle(args) => commands::merkle::run(args),
+        Command::Certificate(args) => commands::certificate::run(args),
         Command::Inbox(args) => commands::inbox::run(args),
         Command::Gateway(args) => commands::gateway::run(args),
         Command::Completion(args) => commands::completion::run(args),

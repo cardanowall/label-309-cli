@@ -87,7 +87,8 @@ pub struct SubmitArgs {
     #[arg(long = "seed-stdin")]
     pub seed_stdin: bool,
     /// target Label 309 gateway base URL (or env CARDANOWALL_BASE_URL, or the active
-    /// gateway profile). Required.
+    /// gateway profile). Required. Full base incl. the version segment, e.g.
+    /// `https://cardanowall.com/api/v1`.
     #[arg(long = "base-url")]
     pub base_url: Option<String>,
     /// use this saved gateway profile (overrides the config default_gateway).
@@ -419,7 +420,7 @@ pub fn run(args: SubmitArgs) -> Result<(), CliError> {
                     mode: "hash",
                     id: res.id,
                     tx_hash: res.tx_hash,
-                    status: res.status,
+                    status: res.status.as_str().to_string(),
                     items_count: Some(res.items_count),
                     root: None,
                     leaf_count: None,
@@ -457,7 +458,7 @@ pub fn run(args: SubmitArgs) -> Result<(), CliError> {
                     mode: "file",
                     id: res.id,
                     tx_hash: res.tx_hash,
-                    status: res.status,
+                    status: res.status.as_str().to_string(),
                     items_count: Some(res.items_count),
                     root: None,
                     leaf_count: None,
@@ -507,7 +508,7 @@ pub fn run(args: SubmitArgs) -> Result<(), CliError> {
                     mode: "merkle",
                     id: res.id,
                     tx_hash: res.tx_hash,
-                    status: res.status,
+                    status: res.status.as_str().to_string(),
                     items_count: None,
                     root: Some(res.root),
                     leaf_count: Some(res.leaf_count),
@@ -594,7 +595,7 @@ mod tests {
     fn requires_api_key_even_with_base_url() {
         // A base URL but no API key → input error (the gateway API is key-only).
         let mut args = base_args();
-        args.base_url = Some("https://gw.example".to_string());
+        args.base_url = Some("https://gw.example/api/v1".to_string());
         let env = FakeSecretEnv::default();
         let config = crate::config::CardanoWallConfig::default();
         assert_eq!(
@@ -610,14 +611,14 @@ mod tests {
         config.gateways.insert(
             "prod".to_string(),
             crate::config::GatewayProfile {
-                base_url: "https://gw.example".to_string(),
+                base_url: "https://gw.example/api/v1".to_string(),
                 api_key: Some("k".to_string()),
             },
         );
         config.default_gateway = Some("prod".to_string());
         let env = FakeSecretEnv::default();
         let gw = resolve_gateway_with(&base_args(), &config, &env).unwrap();
-        assert_eq!(gw.base_url, "https://gw.example");
+        assert_eq!(gw.base_url, "https://gw.example/api/v1");
         assert_eq!(gw.api_key.as_deref(), Some("k"));
     }
 
@@ -661,36 +662,36 @@ mod tests {
         let mut args = base_args();
         args.seed = Some("ab".repeat(32));
         args.api_key = Some("super-secret-bearer".to_string());
-        args.base_url = Some("https://gw.example".to_string());
+        args.base_url = Some("https://gw.example/api/v1".to_string());
         let rendered = format!("{args:?}");
         assert!(!rendered.contains(&"ab".repeat(32)));
         assert!(!rendered.contains("super-secret-bearer"));
         assert!(rendered.contains("[redacted]"));
         // Non-secret fields stay visible for debugging.
-        assert!(rendered.contains("https://gw.example"));
+        assert!(rendered.contains("https://gw.example/api/v1"));
     }
 
     #[test]
     fn gateway_profile_debug_redacts_api_key() {
         let profile = crate::config::GatewayProfile {
-            base_url: "https://gw.example".to_string(),
+            base_url: "https://gw.example/api/v1".to_string(),
             api_key: Some("super-secret-bearer".to_string()),
         };
         let rendered = format!("{profile:?}");
         assert!(!rendered.contains("super-secret-bearer"));
         assert!(rendered.contains("[redacted]"));
-        assert!(rendered.contains("https://gw.example"));
+        assert!(rendered.contains("https://gw.example/api/v1"));
     }
 
     #[test]
     fn service_gateway_debug_redacts_api_key() {
         let gw = crate::secret::ServiceGateway {
-            base_url: "https://gw.example".to_string(),
+            base_url: "https://gw.example/api/v1".to_string(),
             api_key: Some("super-secret-bearer".to_string()),
         };
         let rendered = format!("{gw:?}");
         assert!(!rendered.contains("super-secret-bearer"));
         assert!(rendered.contains("[redacted]"));
-        assert!(rendered.contains("https://gw.example"));
+        assert!(rendered.contains("https://gw.example/api/v1"));
     }
 }

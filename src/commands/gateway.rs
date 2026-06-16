@@ -102,7 +102,8 @@ pub fn run_with_env(
 pub struct GatewayAddArgs {
     /// the profile name (e.g. `prod`).
     pub name: String,
-    /// the service-gateway base URL (required).
+    /// the service-gateway base URL (required) — the full base including the API
+    /// version segment, e.g. `https://cardanowall.com/api/v1`.
     #[arg(long = "base-url")]
     pub base_url: String,
     /// read the opaque API key from stdin (otherwise prompt when a TTY).
