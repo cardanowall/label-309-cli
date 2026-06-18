@@ -9,6 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > Pre-1.0 versions do not carry the stability guarantees of
 > [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - 2026-06-18
+
+### Fixed
+
+- Track the `cardanowall` SDK 0.7.1: `verify` retrieves Arweave content through the `turbo-gateway.com` fast-finality gateway and follows the gateway's same-domain sandbox-subdomain redirects (SSRF-safe — same registrable domain only, deny-host re-checked on every hop, `https`-only, three-hop cap). The dead default gateways `ar-io.net` and `g8way.io` are removed.
+
 ## [0.7.0] - 2026-06-16
 
 ### Added

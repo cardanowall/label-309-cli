@@ -11,6 +11,7 @@
 //! First non-empty source wins; lower-precedence sources are NOT merged in. URL
 //! shape is validated here (https-only, except loopback).
 
+use cardanowall::verifier::content::ARWEAVE_GATEWAY_DEFAULTS;
 use cardanowall::verifier::KOIOS_MAINNET_URL;
 
 use crate::config::read_config_file::CardanoWallConfig;
@@ -113,11 +114,12 @@ fn default_cardano_chain() -> Vec<String> {
 }
 
 fn default_arweave_chain() -> Vec<String> {
-    vec![
-        "https://ar-io.net".to_string(),
-        "https://arweave.net".to_string(),
-        "https://g8way.io".to_string(),
-    ]
+    // Single source of truth: the SDK's `ar://` gateway rotation, so the CLI
+    // resolves the same gateways the SDK verifier walk does.
+    ARWEAVE_GATEWAY_DEFAULTS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
 }
 
 /// Split a comma-separated env value into a trimmed, non-empty list.

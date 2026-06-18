@@ -484,8 +484,10 @@ fn run_list(args: InboxListArgs) -> Result<(), CliError> {
             ..GatewayFlags::default()
         };
         let resolved = resolve_gateways_for(flags, "inbox list")?;
-        let transport = ReqwestTransport::new();
         let deny_hosts = deny_hosts_or_default(&resolved);
+        // The transport carries the deny list so its redirect-policy closure
+        // re-applies the same list the fetcher's initial-URL guard uses.
+        let transport = ReqwestTransport::with_deny_hosts(deny_hosts.clone());
         let mut fetcher = GatewayFetcher::new(&transport, Some(&deny_hosts));
         let mut refreshed = HashMap::new();
         let unique: Vec<String> = {
@@ -692,7 +694,9 @@ fn run_decrypt(args: InboxDecryptArgs) -> Result<(), CliError> {
     };
     let resolved = resolve_gateways_for(flags, "inbox decrypt")?;
     let deny_hosts = deny_hosts_or_default(&resolved);
-    let transport = ReqwestTransport::new();
+    // The transport carries the deny list so its redirect-policy closure
+    // re-applies the same list the fetcher's initial-URL guard uses.
+    let transport = ReqwestTransport::with_deny_hosts(deny_hosts.clone());
     let mut fetcher = GatewayFetcher::new(&transport, Some(&deny_hosts));
 
     let metadata = fetch_metadata(&tx_hash, &args, &resolved, &mut fetcher)?;

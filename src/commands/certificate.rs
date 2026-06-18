@@ -325,8 +325,10 @@ fn run_build(args: CertificateBuildArgs) -> Result<(), CliError> {
     // Build the shared egress only when the network is actually needed, so an
     // offline build never constructs a transport.
     let resolved_gateways = resolve_gateways_for(&args)?;
-    let transport = ReqwestTransport::new();
     let deny_hosts = deny_hosts_or_default(&resolved_gateways);
+    // The transport carries the deny list so its redirect-policy closure
+    // re-applies the same list the fetcher's initial-URL guard uses.
+    let transport = ReqwestTransport::with_deny_hosts(deny_hosts.clone());
 
     let anchor_facts: Option<ResolvedAnchorFacts> = if need_network {
         let mut fetcher = GatewayFetcher::new(&transport, Some(&deny_hosts));
